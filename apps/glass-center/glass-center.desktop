@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Glass Center
+GenericName=Réglages Kali Glass
+Comment=Fonds d'écran glass, flou, dock et thème façon macOS
+Exec=glass-center
+Icon=glass-center
+Terminal=false
+Categories=Settings;DesktopSettings;GTK;
+Keywords=glass;theme;wallpaper;macos;blur;dock;fond;thème;
+StartupNotify=true

@@ -1,0 +1,704 @@
+#!/usr/bin/env python3
+"""kali-glass — applique le bureau « Glass » façon macOS sur Kali Linux (XFCE).
+
+Commandes :
+  kali-glass apply [--light] [--wallpaper NOM]   applique tout le thème
+  kali-glass wallpaper NOM|CHEMIN                change le fond d'écran
+  kali-glass list                                liste les fonds fournis
+  kali-glass mode dark|light                     thème sombre / clair
+  kali-glass blur 0-20                           force du flou (0 = désactivé)
+  kali-glass panel-opacity 0-100                 opacité de la barre du haut
+  kali-glass dock on|off                         dock Plank façon macOS
+  kali-glass dynamic on|off                      fond d'écran qui suit l'heure
+  kali-glass install-themes                      (re)télécharge WhiteSur GTK/icônes/curseurs
+  kali-glass login                               fond Glass sur l'écran de connexion (sudo)
+  kali-glass restore                             remet les réglages d'origine
+  kali-glass status                              affiche l'état actuel
+"""
+import argparse
+import datetime
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+VERSION = "1.0.0"
+HOME = Path.home()
+CONF_DIR = HOME / ".config" / "kali-glass"
+STATE_FILE = CONF_DIR / "state.json"
+DATA_DIRS = [
+    Path(os.environ.get("KALI_GLASS_DATA", "")) if os.environ.get("KALI_GLASS_DATA") else None,
+    Path(__file__).resolve().parent.parent,                # lancé depuis le dépôt git
+    Path("/usr/share/kali-glass"),                           # installé via .deb / install.sh
+    HOME / ".local" / "share" / "kali-glass",
+]
+THEMES_DIR = HOME / ".themes"
+ICONS_DIR = HOME / ".local" / "share" / "icons"
+
+DYNAMIC_SCHEDULE = [  # (heure de début, fond)
+    (6, "light"), (11, "ocean"), (17, "sunset"), (20, "aurora"), (23, "midnight"),
+]
+
+# ───────────────────────── utilitaires ─────────────────────────
+
+def data_dir() -> Path:
+    for d in DATA_DIRS:
+        if d and (d / "wallpapers").is_dir():
+            return d
+    die("Données Kali Glass introuvables (dossier wallpapers/). Réinstalle le paquet.")
+
+
+def die(msg, code=1):
+    print(f"\033[1;31m✗\033[0m {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def info(msg):
+    print(f"\033[1;36m›\033[0m {msg}", flush=True)
+
+
+def ok(msg):
+    print(f"\033[1;32m✓\033[0m {msg}", flush=True)
+
+
+def have(cmd):
+    return shutil.which(cmd) is not None
+
+
+def run(cmd, check=False, quiet=True, **kw):
+    try:
+        return subprocess.run(cmd, check=check, text=True,
+                              stdout=subprocess.PIPE if quiet else None,
+                              stderr=subprocess.PIPE if quiet else None, **kw)
+    except FileNotFoundError:
+        return subprocess.CompletedProcess(cmd, 127, "", "")
+
+
+def load_state():
+    try:
+        return json.loads(STATE_FILE.read_text())
+    except Exception:
+        return {"backup": {}, "settings": {}}
+
+
+def save_state(st):
+    CONF_DIR.mkdir(parents=True, exist_ok=True)
+    STATE_FILE.write_text(json.dumps(st, indent=2, ensure_ascii=False))
+
+
+# ───────────────────────── xfconf ─────────────────────────
+
+def xf_get(channel, prop):
+    r = run(["xfconf-query", "-c", channel, "-p", prop])
+    if r.returncode != 0:
+        return None
+    out = r.stdout.strip()
+    if out.startswith("Value is an array"):
+        vals = [l.strip() for l in out.splitlines()[1:] if l.strip()]
+        return {"array": vals}
+    return out
+
+
+def _backup(st, channel, prop):
+    key = f"{channel}:{prop}"
+    if key not in st["backup"]:
+        st["backup"][key] = xf_get(channel, prop)
+
+
+def xf_set(st, channel, prop, value, typ):
+    """Fixe une propriété xfconf en sauvegardant la valeur d'origine."""
+    if not have("xfconf-query"):
+        return False
+    _backup(st, channel, prop)
+    if typ == "bool":
+        value = "true" if value else "false"
+    r = run(["xfconf-query", "-c", channel, "-p", prop, "--create", "-t", typ, "-s", str(value)])
+    if r.returncode != 0:  # type différent déjà présent → on remplace
+        run(["xfconf-query", "-c", channel, "-p", prop, "-r"])
+        r = run(["xfconf-query", "-c", channel, "-p", prop, "--create", "-t", typ, "-s", str(value)])
+    return r.returncode == 0
+
+
+def xf_set_array(st, channel, prop, values, typ):
+    if not have("xfconf-query"):
+        return False
+    _backup(st, channel, prop)
+    run(["xfconf-query", "-c", channel, "-p", prop, "-r"])
+    cmd = ["xfconf-query", "-c", channel, "-p", prop, "--create", "--force-array"]
+    for v in values:
+        cmd += ["-t", typ, "-s", str(v)]
+    return run(cmd).returncode == 0
+
+
+def xf_list(channel):
+    r = run(["xfconf-query", "-c", channel, "-l"])
+    return r.stdout.split() if r.returncode == 0 else []
+
+
+# ───────────────────────── thèmes WhiteSur ─────────────────────────
+
+REPOS = {
+    "gtk": "https://github.com/vinceliuice/WhiteSur-gtk-theme.git",
+    "icons": "https://github.com/vinceliuice/WhiteSur-icon-theme.git",
+    "cursors": "https://github.com/vinceliuice/WhiteSur-cursors.git",
+}
+
+
+def find_theme(mode):
+    want = "Light" if mode == "light" else "Dark"
+    for base in (THEMES_DIR, HOME / ".local/share/themes", Path("/usr/share/themes")):
+        if base.is_dir():
+            for d in sorted(base.iterdir()):
+                if d.name.startswith("WhiteSur") and want in d.name and (d / "gtk-3.0").is_dir():
+                    return d.name
+    return None
+
+
+def find_icons(mode):
+    for base in (ICONS_DIR, HOME / ".icons", Path("/usr/share/icons")):
+        if base.is_dir():
+            names = {d.name for d in base.iterdir()}
+            for n in (f"WhiteSur-{mode}", "WhiteSur"):
+                if n in names:
+                    return n
+    return None
+
+
+def find_cursors():
+    for base in (ICONS_DIR, HOME / ".icons", Path("/usr/share/icons")):
+        if (base / "WhiteSur-cursors").is_dir():
+            return "WhiteSur-cursors"
+    return None
+
+
+def install_themes(force=False):
+    if not force and find_theme("dark") and find_icons("dark"):
+        ok("Thèmes WhiteSur déjà présents")
+        return
+    if not have("git"):
+        die("git est requis : sudo apt install git")
+    tmp = Path(tempfile.mkdtemp(prefix="kali-glass-"))
+    try:
+        for key, url in REPOS.items():
+            info(f"Téléchargement {url.rsplit('/', 1)[-1][:-4]}…")
+            dest = tmp / key
+            if run(["git", "clone", "--depth", "1", url, str(dest)], quiet=False).returncode != 0:
+                print(f"  ⚠ échec du clonage de {key}, on continue")
+                continue
+            if key == "gtk":
+                r = run(["bash", "./install.sh", "-c", "dark", "-c", "light", "-l"], cwd=dest, quiet=False)
+                if r.returncode != 0:
+                    run(["bash", "./install.sh"], cwd=dest, quiet=False)
+            else:
+                run(["bash", "./install.sh"], cwd=dest, quiet=False)
+        ok("Thèmes WhiteSur installés")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ───────────────────────── fonds d'écran ─────────────────────────
+
+def wallpapers():
+    return sorted((data_dir() / "wallpapers").glob("kali-glass-*.jpg"))
+
+
+def resolve_wallpaper(name):
+    p = Path(os.path.expanduser(name))
+    if p.is_file():
+        return p.resolve()
+    for w in wallpapers():
+        if w.stem == name or w.stem == f"kali-glass-{name}":
+            return w
+    die(f"Fond « {name} » introuvable. Disponibles : " + ", ".join(w.stem.replace('kali-glass-', '') for w in wallpapers()))
+
+
+def monitors():
+    r = run(["xrandr", "--listmonitors"])
+    names = re.findall(r"\s(\S+)$", r.stdout, re.M) if r.returncode == 0 else []
+    return [n for n in names if n and not n.startswith("Monitors")] or ["0", "eDP-1", "HDMI-1", "Virtual1", "Virtual-1"]
+
+
+def set_wallpaper(st, name):
+    path = resolve_wallpaper(name)
+    props = [p for p in xf_list("xfce4-desktop") if p.endswith("/last-image")]
+    if not props:
+        props = [f"/backdrop/screen0/monitor{m}/workspace{w}/last-image" for m in monitors() for w in range(4)]
+    for p in props:
+        xf_set(st, "xfce4-desktop", p, str(path), "string")
+        xf_set(st, "xfce4-desktop", p.replace("last-image", "image-style"), 5, "int")  # zoomé
+    st["settings"]["wallpaper"] = path.stem.replace("kali-glass-", "") if path.parent == data_dir() / "wallpapers" else str(path)
+    ok(f"Fond d'écran : {path.name}")
+
+
+def dynamic_pick(hour=None):
+    hour = datetime.datetime.now().hour if hour is None else hour
+    pick = DYNAMIC_SCHEDULE[-1][1]
+    for start, name in DYNAMIC_SCHEDULE:
+        if hour >= start:
+            pick = name
+    return pick
+
+
+# ───────────────────────── picom / plank ─────────────────────────
+
+AUTOSTART = HOME / ".config" / "autostart"
+
+
+def write_autostart(name, exec_cmd, comment):
+    AUTOSTART.mkdir(parents=True, exist_ok=True)
+    (AUTOSTART / f"kali-glass-{name}.desktop").write_text(
+        "[Desktop Entry]\nType=Application\n"
+        f"Name=Kali Glass {name}\nComment={comment}\nExec={exec_cmd}\n"
+        "X-GNOME-Autostart-enabled=true\nHidden=false\nNoDisplay=false\n"
+    )
+
+
+def remove_autostart(name):
+    f = AUTOSTART / f"kali-glass-{name}.desktop"
+    if f.exists():
+        f.unlink()
+
+
+def picom_conf_path():
+    return HOME / ".config" / "picom" / "kali-glass.conf"
+
+
+def setup_picom(st, strength=None):
+    if not have("picom"):
+        print("  ⚠ picom absent (sudo apt install picom) — pas de flou")
+        return
+    src = data_dir() / "config" / "picom" / "picom.conf"
+    dst = picom_conf_path()
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    text = src.read_text()
+    strength = st["settings"].get("blur", 7) if strength is None else strength
+    if strength <= 0:
+        text = re.sub(r"blur: \{.*?\};", "blur: { method = \"none\"; };", text, flags=re.S)
+    else:
+        text = re.sub(r"strength = \d+;", f"strength = {min(20, int(strength))};", text)
+    dst.write_text(text)
+    st["settings"]["blur"] = int(strength)
+    # le compositeur interne de xfwm4 entre en conflit avec picom
+    xf_set(st, "xfwm4", "/general/use_compositing", False, "bool")
+    write_autostart("picom", f"picom --config {dst}", "Compositeur verre (flou)")
+    restart_picom()
+    ok(f"Flou verre : {'désactivé' if strength <= 0 else strength}")
+
+
+def restart_picom():
+    if not os.environ.get("DISPLAY"):
+        return
+    run(["pkill", "-x", "picom"])
+    time.sleep(0.4)
+    proc = subprocess.Popen(["picom", "--config", str(picom_conf_path())],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    time.sleep(1.5)
+    if proc.poll() is not None:  # GPU/VM sans OpenGL : repli sans flou mais avec transparence
+        print("  ⚠ picom (glx) n'a pas démarré — repli sur xrender (transparence sans flou)")
+        subprocess.Popen(["picom", "--config", str(picom_conf_path()), "--backend", "xrender"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+DOCK_APPS = ["thunar", "xfce4-terminal", "firefox-esr", "kali-burpsuite", "org.wireshark.Wireshark",
+             "mousepad", "glass-center", "xfce4-settings-manager"]
+
+
+def dock_desktop_files():
+    out = []
+    for app in DOCK_APPS:
+        for d in ("/usr/share/applications", str(HOME / ".local/share/applications")):
+            f = Path(d) / f"{app}.desktop"
+            if f.exists():
+                out.append(f)
+                break
+    return out
+
+
+def setup_dock(st, enabled=True):
+    st["settings"]["dock"] = enabled
+    if not enabled:
+        remove_autostart("plank")
+        run(["pkill", "-x", "plank"])
+        remove_xfce_dock(st)
+        ok("Dock désactivé")
+        return
+    if have("plank"):
+        setup_plank(st)
+    else:
+        setup_xfce_dock(st)
+
+
+def setup_plank(st):
+    remove_xfce_dock(st)
+    tdir = HOME / ".local" / "share" / "plank" / "themes" / "KaliGlass"
+    tdir.mkdir(parents=True, exist_ok=True)
+    shutil.copy(data_dir() / "config" / "plank" / "KaliGlass" / "dock.theme", tdir / "dock.theme")
+    schema = "net.launchpad.plank.dock.settings:/net/launchpad/plank/docks/dock1/"
+    for k, v in [("theme", "'KaliGlass'"), ("zoom-enabled", "true"), ("zoom-percent", "150"),
+                 ("icon-size", "48"), ("hide-mode", "'intelligent'"), ("position", "'bottom'"),
+                 ("alignment", "'center'"), ("show-dock-item", "false")]:
+        run(["gsettings", "set", schema, k, v])
+    launchers = HOME / ".config" / "plank" / "dock1" / "launchers"
+    if not launchers.is_dir() or not any(launchers.iterdir()):
+        launchers.mkdir(parents=True, exist_ok=True)
+        for f in dock_desktop_files():
+            (launchers / f"{f.stem}.dockitem").write_text(f"[PlankDockItemPreferences]\nLauncher=file://{f}\n")
+    write_autostart("plank", "plank", "Dock façon macOS")
+    if os.environ.get("DISPLAY"):
+        run(["pkill", "-x", "plank"])
+        time.sleep(0.3)
+        subprocess.Popen(["plank"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    st["settings"]["dock_engine"] = "plank"
+    ok("Dock Plank « KaliGlass » activé")
+
+
+def _panels_array():
+    v = xf_get("xfce4-panel", "/panels")
+    return [int(x) for x in v["array"]] if isinstance(v, dict) else []
+
+
+def _plugin_ids():
+    ids = set()
+    for p in xf_list("xfce4-panel"):
+        m = re.match(r"/plugins/plugin-(\d+)", p)
+        if m:
+            ids.add(int(m.group(1)))
+    return ids
+
+
+def setup_xfce_dock(st):
+    """Dock de secours (plank absent) : panneau XFCE en bas, centré, translucide."""
+    if not have("xfconf-query"):
+        print("  ⚠ xfconf-query absent — pas de dock")
+        return
+    if st["settings"].get("xfce_dock_panel"):
+        ok("Dock XFCE déjà en place")
+        return
+    panels = _panels_array() or panel_ids()
+    pid = max(panels + [1]) + 1
+    base = f"/panels/panel-{pid}"
+    xf_set_array(st, "xfce4-panel", "/panels", panels + [pid], "int")
+    for prop, val, typ in [("position", "p=10;x=0;y=0", "string"), ("position-locked", True, "bool"),
+                           ("size", 56, "uint"), ("icon-size", 44, "uint"), ("length", 1, "uint"),
+                           ("length-adjust", True, "bool"), ("autohide-behavior", 1, "uint"),
+                           ("mode", 0, "uint"), ("background-style", 1, "uint"),
+                           ("enter-opacity", 100, "uint"), ("leave-opacity", 100, "uint")]:
+        xf_set(st, "xfce4-panel", f"{base}/{prop}", val, typ)
+    xf_set_array(st, "xfce4-panel", f"{base}/background-rgba", [1.0, 1.0, 1.0, 0.18], "double")
+
+    plug = max(_plugin_ids() | {0}) + 1
+    files = dock_desktop_files()
+    cfg = HOME / ".config" / "xfce4" / "panel"
+    cfg.mkdir(parents=True, exist_ok=True)
+    if run(["sh", "-c", "ls /usr/lib/*/xfce4/panel/plugins/libdocklike* /usr/lib/xfce4/panel/plugins/libdocklike* 2>/dev/null"]).stdout.strip():
+        xf_set(st, "xfce4-panel", f"/plugins/plugin-{plug}", "docklike", "string")
+        (cfg / f"docklike-{plug}.rc").write_text("[user]\npinned=" + ";".join(str(f) for f in files) + ";\n")
+        ids, kind = [plug], "docklike"
+    else:  # simples lanceurs
+        ids = []
+        for i, f in enumerate(files):
+            n = plug + i
+            ldir = cfg / f"launcher-{n}"
+            ldir.mkdir(parents=True, exist_ok=True)
+            shutil.copy(f, ldir / f.name)
+            xf_set(st, "xfce4-panel", f"/plugins/plugin-{n}", "launcher", "string")
+            xf_set_array(st, "xfce4-panel", f"/plugins/plugin-{n}/items", [f.name], "string")
+            ids.append(n)
+        kind = "lanceurs"
+    xf_set_array(st, "xfce4-panel", f"{base}/plugin-ids", ids, "int")
+    st["settings"]["xfce_dock_panel"] = pid
+    st["settings"]["xfce_dock_plugins"] = ids
+    st["settings"]["dock_engine"] = "xfce"
+    reload_panel()
+    ok(f"Dock XFCE ({kind}) activé — plank n'est pas disponible sur ce système")
+
+
+def remove_xfce_dock(st):
+    pid = st["settings"].pop("xfce_dock_panel", None)
+    if not pid:
+        return
+    panels = [p for p in _panels_array() if p != pid]
+    if panels:
+        xf_set_array(st, "xfce4-panel", "/panels", panels, "int")
+    run(["xfconf-query", "-c", "xfce4-panel", "-p", f"/panels/panel-{pid}", "-r", "-R"])
+    for n in st["settings"].pop("xfce_dock_plugins", []):
+        run(["xfconf-query", "-c", "xfce4-panel", "-p", f"/plugins/plugin-{n}", "-r", "-R"])
+    reload_panel()
+
+
+# ───────────────────────── panneau, fenêtres, apparence ─────────────────────────
+
+def panel_ids():
+    ids = set()
+    for p in xf_list("xfce4-panel"):
+        m = re.match(r"/panels/panel-(\d+)/", p)
+        if m:
+            ids.add(int(m.group(1)))
+    return sorted(ids) or [1]
+
+
+def set_panel_opacity(st, pct):
+    pct = max(0, min(100, int(pct)))
+    dark = st["settings"].get("mode", "dark") == "dark"
+    rgb = (0.08, 0.08, 0.12) if dark else (0.96, 0.96, 0.98)
+    for i in panel_ids():
+        if i == st["settings"].get("xfce_dock_panel"):
+            continue
+        base = f"/panels/panel-{i}"
+        xf_set(st, "xfce4-panel", f"{base}/background-style", 1, "uint")
+        xf_set_array(st, "xfce4-panel", f"{base}/background-rgba", [*rgb, round(pct / 100, 2)], "double")
+    st["settings"]["panel_opacity"] = pct
+    ok(f"Barre du haut : opacité {pct} %")
+
+
+def style_panel(st):
+    """Barre fine en haut, comme la barre de menus macOS."""
+    first = panel_ids()[0]
+    base = f"/panels/panel-{first}"
+    xf_set(st, "xfce4-panel", f"{base}/position", "p=6;x=0;y=0", "string")
+    xf_set(st, "xfce4-panel", f"{base}/position-locked", True, "bool")
+    xf_set(st, "xfce4-panel", f"{base}/size", 28, "uint")
+    xf_set(st, "xfce4-panel", f"{base}/icon-size", 16, "uint")
+    xf_set(st, "xfce4-panel", f"{base}/length", 100, "uint")
+
+
+def set_mode(st, mode):
+    st["settings"]["mode"] = mode
+    gtk = find_theme(mode)
+    icons = find_icons(mode)
+    cursors = find_cursors()
+    if gtk:
+        xf_set(st, "xsettings", "/Net/ThemeName", gtk, "string")
+        xf_set(st, "xfwm4", "/general/theme", gtk, "string")
+    else:
+        print("  ⚠ thème WhiteSur absent — lance : kali-glass install-themes")
+    if icons:
+        xf_set(st, "xsettings", "/Net/IconThemeName", icons, "string")
+    if cursors:
+        xf_set(st, "xsettings", "/Gtk/CursorThemeName", cursors, "string")
+    # boutons à gauche comme sur macOS : fermer, réduire, agrandir
+    xf_set(st, "xfwm4", "/general/button_layout", "CHM|", "string")
+    xf_set(st, "xfwm4", "/general/title_alignment", "center", "string")
+    fams = run(["fc-list", ":", "family"]).stdout or ""
+    if any(f.split(",")[0].strip() == "Inter" for f in fams.splitlines()):
+        xf_set(st, "xsettings", "/Gtk/FontName", "Inter 10", "string")
+        xf_set(st, "xfwm4", "/general/title_font", "Inter Semi-Bold 10", "string")
+    run(["gsettings", "set", "org.gnome.desktop.interface", "color-scheme",
+         "prefer-light" if mode == "light" else "prefer-dark"])
+    install_gtk_css(mode)
+    if "panel_opacity" in st["settings"]:
+        set_panel_opacity(st, st["settings"]["panel_opacity"])
+    ok(f"Mode {'clair' if mode == 'light' else 'sombre'}" + (f" ({gtk})" if gtk else ""))
+
+
+def install_gtk_css(mode):
+    src = data_dir() / "config" / "gtk-3.0" / "kali-glass.css"
+    dst_dir = HOME / ".config" / "gtk-3.0"
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy(src, dst_dir / "kali-glass.css")
+    gtk_css = dst_dir / "gtk.css"
+    line = '@import url("kali-glass.css");'
+    cur = gtk_css.read_text() if gtk_css.exists() else ""
+    if line not in cur:
+        gtk_css.write_text(line + "\n" + cur)
+
+
+def remove_gtk_css():
+    gtk_css = HOME / ".config" / "gtk-3.0" / "gtk.css"
+    if gtk_css.exists():
+        gtk_css.write_text(gtk_css.read_text().replace('@import url("kali-glass.css");\n', ""))
+
+
+def reload_panel():
+    if os.environ.get("DISPLAY") and have("xfce4-panel"):
+        run(["xfce4-panel", "-r"])
+
+
+# ───────────────────────── commandes ─────────────────────────
+
+def cmd_apply(a):
+    st = load_state()
+    print("\n  \033[1m Kali Glass \033[0m — bureau verre façon macOS\n")
+    if not a.no_themes:
+        install_themes()
+    st["settings"].setdefault("panel_opacity", 35)
+    style_panel(st)
+    set_mode(st, "light" if a.light else st["settings"].get("mode", "dark") if a.keep_mode else "dark")
+    set_wallpaper(st, a.wallpaper or st["settings"].get("wallpaper") or ("light" if a.light else "aurora"))
+    setup_picom(st)
+    setup_dock(st, st["settings"].get("dock", True))
+    st["settings"]["applied"] = True
+    save_state(st)
+    reload_panel()
+    print("\n  ✨ Terminé. Si quelque chose ne s'affiche pas, déconnecte-toi puis reconnecte-toi.\n")
+
+
+def cmd_wallpaper(a):
+    st = load_state()
+    set_wallpaper(st, a.name)
+    if a.name != "dynamic":
+        st["settings"]["dynamic"] = False
+        remove_autostart("dynamic")
+    save_state(st)
+
+
+def cmd_list(a):
+    cur = load_state()["settings"].get("wallpaper")
+    for w in wallpapers():
+        n = w.stem.replace("kali-glass-", "")
+        print(("● " if n == cur else "  ") + n + f"   {w}")
+
+
+def cmd_mode(a):
+    st = load_state()
+    set_mode(st, a.mode)
+    save_state(st)
+    reload_panel()
+
+
+def cmd_blur(a):
+    st = load_state()
+    setup_picom(st, a.strength)
+    save_state(st)
+
+
+def cmd_panel(a):
+    st = load_state()
+    set_panel_opacity(st, a.percent)
+    save_state(st)
+
+
+def cmd_dock(a):
+    st = load_state()
+    setup_dock(st, a.state == "on")
+    save_state(st)
+
+
+def cmd_dynamic(a):
+    st = load_state()
+    if a.state == "on":
+        exe = shutil.which("kali-glass") or str(Path(__file__).resolve())
+        write_autostart("dynamic", f"{exe} dynamic-daemon", "Fond d'écran selon l'heure")
+        st["settings"]["dynamic"] = True
+        set_wallpaper(st, dynamic_pick())
+        save_state(st)
+        if os.environ.get("DISPLAY"):
+            subprocess.Popen([exe, "dynamic-daemon"], stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+        ok("Fond dynamique activé (change selon l'heure)")
+    else:
+        remove_autostart("dynamic")
+        run(["pkill", "-f", "kali-glass dynamic-daemon"])
+        st["settings"]["dynamic"] = False
+        save_state(st)
+        ok("Fond dynamique désactivé")
+
+
+def cmd_dynamic_daemon(a):
+    last = None
+    while True:
+        st = load_state()
+        if not st["settings"].get("dynamic"):
+            return
+        pick = dynamic_pick()
+        if pick != last:
+            set_wallpaper(st, pick)
+            save_state(st)
+            last = pick
+        time.sleep(300)
+
+
+def cmd_install_themes(a):
+    install_themes(force=True)
+
+
+def cmd_login(a):
+    wp = resolve_wallpaper(a.wallpaper)
+    if os.geteuid() != 0:
+        die("Cette commande doit être lancée avec sudo : sudo kali-glass login")
+    dest = Path("/usr/share/backgrounds/kali-glass")
+    dest.mkdir(parents=True, exist_ok=True)
+    shutil.copy(wp, dest / "login.png")
+    conf = Path("/etc/lightdm/lightdm-gtk-greeter.conf")
+    if not conf.exists():
+        die("lightdm-gtk-greeter non trouvé")
+    shutil.copy(conf, str(conf) + ".kali-glass.bak") if not Path(str(conf) + ".kali-glass.bak").exists() else None
+    text = conf.read_text()
+    if re.search(r"^\s*background\s*=", text, re.M):
+        text = re.sub(r"^\s*background\s*=.*$", f"background = {dest / 'login.png'}", text, flags=re.M)
+    else:
+        text = text.replace("[greeter]", f"[greeter]\nbackground = {dest / 'login.png'}", 1)
+    conf.write_text(text)
+    ok("Écran de connexion mis à jour (visible à la prochaine connexion)")
+
+
+def cmd_restore(a):
+    st = load_state()
+    for key, val in st.get("backup", {}).items():
+        channel, prop = key.split(":", 1)
+        if val is None:
+            run(["xfconf-query", "-c", channel, "-p", prop, "-r"])
+        elif isinstance(val, dict):
+            cmd = ["xfconf-query", "-c", channel, "-p", prop, "--create", "--force-array"]
+            for v in val["array"]:
+                t = "int" if re.fullmatch(r"-?\d+", v) else "double" if re.fullmatch(r"-?\d+\.\d+", v) else "string"
+                cmd += ["-t", t, "-s", v]
+            run(["xfconf-query", "-c", channel, "-p", prop, "-r"])
+            run(cmd)
+        else:
+            t = "bool" if val in ("true", "false") else "int" if re.fullmatch(r"-?\d+", val) else "string"
+            r = run(["xfconf-query", "-c", channel, "-p", prop, "-s", val])
+            if r.returncode != 0:
+                run(["xfconf-query", "-c", channel, "-p", prop, "--create", "-t", t, "-s", val])
+    for n in ("picom", "plank", "dynamic"):
+        remove_autostart(n)
+    run(["pkill", "-x", "picom"]); run(["pkill", "-x", "plank"])
+    run(["pkill", "-f", "kali-glass dynamic-daemon"])
+    remove_gtk_css()
+    if STATE_FILE.exists():
+        STATE_FILE.rename(STATE_FILE.with_suffix(".restored.json"))
+    reload_panel()
+    ok("Réglages d'origine restaurés. Déconnecte-toi pour un retour complet.")
+
+
+def cmd_status(a):
+    st = load_state()["settings"]
+    print(json.dumps({"version": VERSION, **st,
+                      "picom": bool(run(["pgrep", "-x", "picom"]).stdout.strip()),
+                      "plank": bool(run(["pgrep", "-x", "plank"]).stdout.strip()),
+                      "gtk": find_theme(st.get("mode", "dark")), "data": str(data_dir())},
+                     indent=2, ensure_ascii=False))
+
+
+def main():
+    p = argparse.ArgumentParser(prog="kali-glass", description="Bureau Glass façon macOS pour Kali Linux")
+    p.add_argument("--version", action="version", version=VERSION)
+    sp = p.add_subparsers(dest="cmd", required=True)
+    s = sp.add_parser("apply"); s.add_argument("--light", action="store_true"); s.add_argument("--wallpaper")
+    s.add_argument("--no-themes", action="store_true"); s.add_argument("--keep-mode", action="store_true")
+    s.set_defaults(f=cmd_apply)
+    s = sp.add_parser("wallpaper"); s.add_argument("name"); s.set_defaults(f=cmd_wallpaper)
+    sp.add_parser("list").set_defaults(f=cmd_list)
+    s = sp.add_parser("mode"); s.add_argument("mode", choices=["dark", "light"]); s.set_defaults(f=cmd_mode)
+    s = sp.add_parser("blur"); s.add_argument("strength", type=int); s.set_defaults(f=cmd_blur)
+    s = sp.add_parser("panel-opacity"); s.add_argument("percent", type=int); s.set_defaults(f=cmd_panel)
+    s = sp.add_parser("dock"); s.add_argument("state", choices=["on", "off"]); s.set_defaults(f=cmd_dock)
+    s = sp.add_parser("dynamic"); s.add_argument("state", choices=["on", "off"]); s.set_defaults(f=cmd_dynamic)
+    sp.add_parser("dynamic-daemon").set_defaults(f=cmd_dynamic_daemon)
+    sp.add_parser("install-themes").set_defaults(f=cmd_install_themes)
+    s = sp.add_parser("login"); s.add_argument("--wallpaper", default="aurora"); s.set_defaults(f=cmd_login)
+    sp.add_parser("restore").set_defaults(f=cmd_restore)
+    sp.add_parser("status").set_defaults(f=cmd_status)
+    a = p.parse_args()
+    if os.geteuid() == 0 and a.cmd not in ("login", "list", "status"):
+        die("Ne lance pas kali-glass avec sudo (les réglages sont propres à ton utilisateur).")
+    a.f(a)
+
+
+if __name__ == "__main__":
+    main()

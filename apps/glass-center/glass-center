@@ -1,0 +1,365 @@
+#!/usr/bin/env python3
+"""Glass Center — panneau de réglages du bureau Kali Glass (GTK 3)."""
+import json
+import os
+import shutil
+import subprocess
+import threading
+from pathlib import Path
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import Gdk, GdkPixbuf, GLib, Gtk  # noqa: E402
+
+APP_ID = "io.github.ck526438.GlassCenter"
+STATE = Path.home() / ".config" / "kali-glass" / "state.json"
+HERE = Path(__file__).resolve().parent
+
+
+def cli():
+    for c in (shutil.which("kali-glass"), HERE.parent.parent / "bin" / "kali-glass", "/usr/bin/kali-glass"):
+        if c and Path(c).exists():
+            return str(c)
+    return "kali-glass"
+
+
+def data_dir():
+    for d in (HERE.parent.parent, Path("/usr/share/kali-glass"), Path.home() / ".local/share/kali-glass"):
+        if (d / "wallpapers").is_dir():
+            return d
+    return Path("/usr/share/kali-glass")
+
+
+def state():
+    try:
+        return json.loads(STATE.read_text()).get("settings", {})
+    except Exception:
+        return {}
+
+
+CSS = b"""
+window.glass {
+  background-image: none;
+  background-color: rgba(22, 24, 38, 0.62);
+  color: #f2f4ff;
+}
+window.glass.opaque { background-color: #1c1f33; }
+window.glass.light.opaque { background-color: #eef0f8; }
+window.glass label, window.glass .ghost { color: #f2f4ff; }
+window.glass.light label, window.glass.light .ghost { color: #1c1d26; }
+window.glass .big label { color: white; }
+window.glass.light {
+  background-image: none;
+  background-color: rgba(250, 250, 255, 0.70);
+  color: #1c1d26;
+}
+.sidebar {
+  background-color: rgba(255, 255, 255, 0.05);
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 14px 10px;
+}
+.light .sidebar { background-color: rgba(0, 0, 0, 0.03); border-right-color: rgba(0,0,0,0.06); }
+.sidebar row {
+  border-radius: 9px;
+  padding: 8px 12px;
+  margin: 2px 0;
+  background: transparent;
+}
+.sidebar row:selected { background-color: rgba(120, 150, 255, 0.35); }
+.title { font-size: 22px; font-weight: 700; }
+.subtitle { opacity: 0.65; }
+.card {
+  background-color: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  padding: 16px 18px;
+}
+.light .card { background-color: rgba(255,255,255,0.55); border-color: rgba(0,0,0,0.07); }
+.thumb {
+  border-radius: 14px;
+  padding: 4px;
+  border: 2px solid transparent;
+  background: transparent;
+}
+.thumb.active { border-color: #7aa2ff; }
+.thumb:hover { background-color: rgba(255, 255, 255, 0.08); }
+.big {
+  border-radius: 12px;
+  padding: 8px 22px;
+  font-weight: 600;
+  background-image: none;
+  background-color: #4f7cff;
+  color: white;
+  border: none;
+}
+.big:hover { background-color: #6a8fff; }
+.ghost {
+  border-radius: 12px;
+  padding: 8px 18px;
+  background-image: none;
+  background-color: rgba(255,255,255,0.10);
+  border: 1px solid rgba(255,255,255,0.14);
+}
+.status { opacity: 0.75; font-size: 12px; }
+window.glass headerbar, window.glass .titlebar {
+  background-image: none;
+  background-color: transparent;
+  border: none;
+  box-shadow: none;
+}
+window.glass.opaque headerbar { background-color: #1c1f33; }
+window.glass.light.opaque headerbar { background-color: #eef0f8; }
+"""
+
+
+class GlassCenter(Gtk.Window):
+    def __init__(self):
+        super().__init__(title="Glass Center")
+        self.set_default_size(980, 640)
+        self.set_icon_name("glass-center")
+        self.st = state()
+        self.busy = False
+
+        # Fenêtre transparente (picom floute ce qui est derrière)
+        screen = self.get_screen()
+        visual = screen.get_rgba_visual()
+        ctx = self.get_style_context()
+        ctx.add_class("glass")
+        if visual and screen.is_composited():
+            self.set_visual(visual)
+            self.set_app_paintable(True)
+        else:
+            ctx.add_class("opaque")  # pas de compositeur : fond plein lisible
+        if self.st.get("mode") == "light":
+            ctx.add_class("light")
+        prov = Gtk.CssProvider()
+        prov.load_from_data(CSS)
+        Gtk.StyleContext.add_provider_for_screen(screen, prov, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+        hb = Gtk.HeaderBar(show_close_button=True)
+        hb.set_decoration_layout("close,minimize,maximize:")  # boutons à gauche façon macOS
+        hb.set_title("Glass Center")
+        self.set_titlebar(hb)
+
+        root = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        self.add(root)
+
+        # Barre latérale
+        side = Gtk.ListBox()
+        side.get_style_context().add_class("sidebar")
+        side.set_size_request(210, -1)
+        self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, transition_duration=180)
+        pages = [
+            ("wall", "🖼  Fonds d'écran", self.page_wallpapers()),
+            ("look", "✨  Apparence", self.page_look()),
+            ("dock", "⚓  Dock & barre", self.page_dock()),
+            ("about", "ℹ  À propos", self.page_about()),
+        ]
+        for key, label, widget in pages:
+            row = Gtk.ListBoxRow()
+            row.add(Gtk.Label(label=label, xalign=0))
+            row.key = key
+            side.add(row)
+            self.stack.add_named(widget, key)
+        side.connect("row-selected", lambda _l, r: r and self.stack.set_visible_child_name(r.key))
+        side.select_row(side.get_row_at_index(0))
+        root.pack_start(side, False, False, 0)
+
+        right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        right.pack_start(self.stack, True, True, 0)
+        bar = Gtk.Box(spacing=10, margin=16)
+        self.status = Gtk.Label(label="Prêt.", xalign=0)
+        self.status.get_style_context().add_class("status")
+        self.spinner = Gtk.Spinner()
+        restore = Gtk.Button(label="Restaurer l'original")
+        restore.get_style_context().add_class("ghost")
+        restore.connect("clicked", self.on_restore)
+        apply_all = Gtk.Button(label="Appliquer Kali Glass")
+        apply_all.get_style_context().add_class("big")
+        apply_all.connect("clicked", lambda _b: self.run("apply", "--keep-mode", msg="Application du thème complet…"))
+        bar.pack_start(self.spinner, False, False, 0)
+        bar.pack_start(self.status, True, True, 0)
+        bar.pack_end(apply_all, False, False, 0)
+        bar.pack_end(restore, False, False, 0)
+        right.pack_end(bar, False, False, 0)
+        root.pack_start(right, True, True, 0)
+
+    # ───────── pages ─────────
+    def header(self, box, title, sub):
+        t = Gtk.Label(label=title, xalign=0)
+        t.get_style_context().add_class("title")
+        s = Gtk.Label(label=sub, xalign=0, wrap=True)
+        s.get_style_context().add_class("subtitle")
+        box.pack_start(t, False, False, 0)
+        box.pack_start(s, False, False, 0)
+
+    def page(self):
+        sc = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14, margin=24)
+        sc.add(box)
+        return sc, box
+
+    def card(self, box, title, desc, control):
+        c = Gtk.Box(spacing=16)
+        c.get_style_context().add_class("card")
+        v = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        t = Gtk.Label(label=title, xalign=0)
+        t.set_markup(f"<b>{GLib.markup_escape_text(title)}</b>")
+        d = Gtk.Label(label=desc, xalign=0, wrap=True)
+        d.get_style_context().add_class("subtitle")
+        v.pack_start(t, False, False, 0)
+        v.pack_start(d, False, False, 0)
+        c.pack_start(v, True, True, 0)
+        control.set_valign(Gtk.Align.CENTER)
+        c.pack_end(control, False, False, 0)
+        box.pack_start(c, False, False, 0)
+
+    def page_wallpapers(self):
+        sc, box = self.page()
+        self.header(box, "Fonds d'écran", "Verre dépoli, halos lumineux. Clique pour appliquer.")
+        flow = Gtk.FlowBox(max_children_per_line=3, min_children_per_line=2, selection_mode=Gtk.SelectionMode.NONE,
+                           column_spacing=10, row_spacing=10, homogeneous=True)
+        self.thumbs = {}
+        cur = self.st.get("wallpaper")
+        for wp in sorted((data_dir() / "wallpapers").glob("kali-glass-*.jpg")):
+            name = wp.stem.replace("kali-glass-", "")
+            btn = Gtk.Button(relief=Gtk.ReliefStyle.NONE)
+            btn.get_style_context().add_class("thumb")
+            if name == cur:
+                btn.get_style_context().add_class("active")
+            v = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+            img = Gtk.Image()
+            v.pack_start(img, False, False, 0)
+            v.pack_start(Gtk.Label(label=name.capitalize()), False, False, 0)
+            btn.add(v)
+            btn.connect("clicked", self.on_wallpaper, name)
+            self.thumbs[name] = btn
+            flow.add(btn)
+            self.load_thumb(wp, img)
+        box.pack_start(flow, False, False, 0)
+
+        own = Gtk.FileChooserButton(title="Choisir une image", action=Gtk.FileChooserAction.OPEN)
+        f = Gtk.FileFilter()
+        f.add_mime_type("image/png"); f.add_mime_type("image/jpeg"); f.add_mime_type("image/webp")
+        own.add_filter(f)
+        own.connect("file-set", lambda b: self.run("wallpaper", b.get_filename(), msg="Fond personnalisé…"))
+        self.card(box, "Ta propre image", "Utilise n'importe quelle photo comme fond.", own)
+
+        dyn = Gtk.Switch(active=bool(self.st.get("dynamic")))
+        dyn.connect("state-set", lambda _s, on: self.run("dynamic", "on" if on else "off", msg="Fond dynamique…") or False)
+        self.card(box, "Fond dynamique", "Clair le matin, océan l'après-midi, coucher de soleil le soir, nuit ensuite.", dyn)
+        return sc
+
+    def load_thumb(self, path, img):
+        def work():
+            try:
+                pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(str(path), 240, 135, True)
+                GLib.idle_add(img.set_from_pixbuf, pb)
+            except Exception:
+                pass
+        threading.Thread(target=work, daemon=True).start()
+
+    def page_look(self):
+        sc, box = self.page()
+        self.header(box, "Apparence", "Mode, flou du verre et transparence.")
+        mode = Gtk.Switch(active=self.st.get("mode") == "light")
+        mode.connect("state-set", self.on_mode)
+        self.card(box, "Mode clair", "Bascule entre WhiteSur sombre et clair.", mode)
+
+        blur = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 20, 1)
+        blur.set_value(self.st.get("blur", 7)); blur.set_size_request(240, -1)
+        blur.connect("button-release-event", lambda s, _e: self.run("blur", str(int(s.get_value())), msg="Flou…") or False)
+        self.card(box, "Intensité du flou", "0 = pas de flou. 6 à 9 donne le rendu « verre » macOS.", blur)
+
+        restart = Gtk.Button(label="Redémarrer")
+        restart.get_style_context().add_class("ghost")
+        restart.connect("clicked", lambda _b: self.run("blur", str(int(blur.get_value())), msg="Compositeur…"))
+        self.card(box, "Compositeur picom", "Relance picom si le flou disparaît.", restart)
+        return sc
+
+    def page_dock(self):
+        sc, box = self.page()
+        self.header(box, "Dock & barre", "Le dock en bas et la barre de menus en haut, comme sur macOS.")
+        dock = Gtk.Switch(active=self.st.get("dock", True))
+        dock.connect("state-set", lambda _s, on: self.run("dock", "on" if on else "off", msg="Dock…") or False)
+        self.card(box, "Dock Plank", "Dock en verre avec effet loupe (zoom 150 %).", dock)
+
+        op = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 5)
+        op.set_value(self.st.get("panel_opacity", 35)); op.set_size_request(240, -1)
+        op.connect("button-release-event", lambda s, _e: self.run("panel-opacity", str(int(s.get_value())), msg="Barre…") or False)
+        self.card(box, "Opacité de la barre du haut", "Plus c'est bas, plus on voit le fond à travers.", op)
+        return sc
+
+    def page_about(self):
+        sc, box = self.page()
+        self.header(box, "Kali Glass", "Bureau verre façon macOS pour Kali Linux (XFCE).")
+        txt = Gtk.Label(xalign=0, wrap=True, selectable=True)
+        txt.set_markup(
+            "Version 1.0.0 — par <b>ck526438-lgtm</b>\n\n"
+            "• Thème GTK, icônes et curseurs : WhiteSur de vinceliuice (GPL-3.0 / MIT)\n"
+            "• Flou : picom (dual_kawase)\n"
+            "• Dock : Plank\n\n"
+            "En ligne de commande : <tt>kali-glass --help</tt>\n"
+            "<a href='https://github.com/ck526438-lgtm/kali-glass'>github.com/ck526438-lgtm/kali-glass</a>")
+        box.pack_start(txt, False, False, 0)
+        return sc
+
+    # ───────── actions ─────────
+    def run(self, *args, msg="…"):
+        if self.busy:
+            return
+        self.busy = True
+        self.spinner.start()
+        self.status.set_text(msg)
+
+        def work():
+            r = subprocess.run([cli(), *args], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            out = (r.stdout or "").strip().splitlines()
+            last = out[-1] if out else ""
+            GLib.idle_add(self.done, r.returncode == 0, last)
+        threading.Thread(target=work, daemon=True).start()
+
+    def done(self, success, last):
+        self.busy = False
+        self.spinner.stop()
+        clean = last.replace("\033[1;32m", "").replace("\033[1;31m", "").replace("\033[0m", "").replace("\033[1;36m", "")
+        self.status.set_text(("✓ " if success else "✗ ") + (clean.lstrip("✓✗› ").strip() or ("Fait." if success else "Erreur.")))
+        self.st = state()
+        cur = self.st.get("wallpaper")
+        for n, b in self.thumbs.items():
+            (b.get_style_context().add_class if n == cur else b.get_style_context().remove_class)("active")
+        return False
+
+    def on_wallpaper(self, _b, name):
+        self.run("wallpaper", name, msg=f"Fond « {name} »…")
+
+    def on_mode(self, _s, on):
+        ctx = self.get_style_context()
+        (ctx.add_class if on else ctx.remove_class)("light")
+        self.run("mode", "light" if on else "dark", msg="Changement de mode…")
+        return False
+
+    def on_restore(self, _b):
+        d = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
+                              buttons=Gtk.ButtonsType.OK_CANCEL, text="Restaurer le bureau d'origine ?")
+        d.format_secondary_text("Le thème, le fond, la barre et le dock reviendront comme avant Kali Glass.")
+        if d.run() == Gtk.ResponseType.OK:
+            self.run("restore", msg="Restauration…")
+        d.destroy()
+
+
+def main():
+    if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+        print("Glass Center nécessite une session graphique.")
+        return
+    win = GlassCenter()
+    win.connect("destroy", Gtk.main_quit)
+    win.show_all()
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    main()

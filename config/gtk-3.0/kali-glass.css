@@ -1,0 +1,50 @@
+/* Kali Glass — retouches GTK3 chargées par-dessus le thème WhiteSur.
+   Les zones transparentes sont floutées par picom (dual_kawase). */
+
+/* Barre du haut XFCE : texte net sur le verre */
+.xfce4-panel {
+  font-weight: 500;
+}
+.xfce4-panel button {
+  border-radius: 7px;
+  padding: 0 6px;
+  transition: background-color 150ms ease;
+}
+.xfce4-panel button:hover {
+  background-color: alpha(white, 0.14);
+}
+.xfce4-panel button:checked {
+  background-color: alpha(white, 0.22);
+}
+
+/* Menus déroulants et popovers arrondis et translucides */
+menu, .menu, .context-menu {
+  border-radius: 10px;
+  padding: 5px;
+}
+menu menuitem, .menu menuitem {
+  border-radius: 6px;
+  margin: 1px 2px;
+}
+popover, popover.background {
+  border-radius: 12px;
+}
+
+/* Whisker Menu (menu Kali) façon Launchpad */
+#whiskermenu-window, #whiskermenu-window > box {
+  border-radius: 14px;
+}
+#whiskermenu-window entry {
+  border-radius: 9px;
+  min-height: 30px;
+}
+
+/* Bulles d'aide */
+tooltip, tooltip.background {
+  border-radius: 8px;
+}
+
+/* Terminal XFCE : coins arrondis cohérents avec picom */
+.xfce4-terminal-window, vte-terminal {
+  border-radius: 0 0 12px 12px;
+}
