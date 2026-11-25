@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.ck526438.GlassCenter</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Glass Center</name>
+  <summary>Bureau verre façon macOS pour Kali Linux</summary>
+  <description>
+    <p>Glass Center règle le thème Kali Glass : fonds d'écran en verre dépoli, flou en temps réel,
+    barre du haut translucide, dock avec effet loupe, mode clair ou sombre et fond dynamique.</p>
+    <p>Un diagnostic intégré vérifie les dépendances et la carte graphique, et un bouton restaure
+    le bureau d'origine.</p>
+  </description>
+  <launchable type="desktop-id">glass-center.desktop</launchable>
+  <url type="homepage">https://github.com/ck526438-lgtm/kali-glass</url>
+  <url type="bugtracker">https://github.com/ck526438-lgtm/kali-glass/issues</url>
+  <developer id="io.github.ck526438"><name>ck526438-lgtm</name></developer>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/ck526438-lgtm/kali-glass/main/docs/preview.jpg</image>
+    </screenshot>
+  </screenshots>
+  <categories><category>Settings</category><category>DesktopSettings</category></categories>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="1.1.0" date="2026-11-25"/>
+    <release version="1.0.0" date="2026-11-25"/>
+  </releases>
+</component>

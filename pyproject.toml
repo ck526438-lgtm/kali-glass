@@ -1,0 +1,11 @@
+[tool.ruff]
+line-length = 130
+target-version = "py311"
+extend-include = ["bin/kali-glass", "apps/glass-center/glass-center"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "UP"]
+ignore = ["E701", "E702", "B008", "UP015"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

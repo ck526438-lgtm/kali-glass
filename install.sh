@@ -49,7 +49,7 @@ fi
 
 c "Installation des dépendances (sudo)…"
 sudo apt-get update -qq
-sudo apt-get install -y picom git sassc libglib2.0-dev-bin libxml2-utils \
+sudo apt-get install -y make picom git sassc libglib2.0-dev-bin libxml2-utils \
   python3-gi gir1.2-gtk-3.0 xfconf x11-xserver-utils
 # plank a quitté Debian testing en 2026 : s'il manque, Kali Glass crée un dock avec un panneau XFCE
 sudo apt-get install -y plank 2>/dev/null || sudo apt-get install -y xfce4-docklike-plugin 2>/dev/null || \
@@ -58,14 +58,7 @@ sudo apt-get install -y fonts-inter 2>/dev/null || echo "  (police Inter indispo
 okk "Dépendances installées"
 
 c "Copie des fichiers dans $PREFIX…"
-sudo install -d "$PREFIX"
-sudo cp -r "$HERE/wallpapers" "$HERE/config" "$PREFIX/"
-sudo install -Dm755 "$HERE/bin/kali-glass" /usr/bin/kali-glass
-sudo install -Dm755 "$HERE/apps/glass-center/glass-center" /usr/bin/glass-center
-sudo install -Dm644 "$HERE/apps/glass-center/glass-center.desktop" /usr/share/applications/glass-center.desktop
-sudo install -Dm644 "$HERE/apps/glass-center/glass-center.svg" /usr/share/icons/hicolor/scalable/apps/glass-center.svg
-sudo install -d /usr/share/backgrounds/kali-glass
-sudo cp "$HERE"/wallpapers/*.jpg /usr/share/backgrounds/kali-glass/
+sudo make -C "$HERE" install PREFIX=/usr >/dev/null
 sudo gtk-update-icon-cache -q /usr/share/icons/hicolor 2>/dev/null || true
 okk "Fichiers installés"
 

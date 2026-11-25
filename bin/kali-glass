@@ -14,6 +14,7 @@ Commandes :
   kali-glass login                               fond Glass sur l'écran de connexion (sudo)
   kali-glass restore                             remet les réglages d'origine
   kali-glass status                              affiche l'état actuel
+  kali-glass doctor                              diagnostic (dépendances, GPU, thèmes)
 """
 import argparse
 import datetime
@@ -27,10 +28,13 @@ import tempfile
 import time
 from pathlib import Path
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 HOME = Path.home()
 CONF_DIR = HOME / ".config" / "kali-glass"
 STATE_FILE = CONF_DIR / "state.json"
+LOG_FILE = HOME / ".cache" / "kali-glass" / "kali-glass.log"
+VERBOSE = False
+COLOR = sys.stdout.isatty() and "NO_COLOR" not in os.environ
 DATA_DIRS = [
     Path(os.environ.get("KALI_GLASS_DATA", "")) if os.environ.get("KALI_GLASS_DATA") else None,
     Path(__file__).resolve().parent.parent,                # lancé depuis le dépôt git
@@ -53,17 +57,41 @@ def data_dir() -> Path:
     die("Données Kali Glass introuvables (dossier wallpapers/). Réinstalle le paquet.")
 
 
+def _c(code, text):
+    return f"\033[{code}m{text}\033[0m" if COLOR else text
+
+
+def log(msg):
+    """Journal persistant : ~/.cache/kali-glass/kali-glass.log (utile pour les rapports de bug)."""
+    try:
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with LOG_FILE.open("a", encoding="utf-8") as f:
+            f.write(f"{datetime.datetime.now().isoformat(timespec='seconds')} {msg}\n")
+        if LOG_FILE.stat().st_size > 512_000:  # rotation simple
+            LOG_FILE.replace(LOG_FILE.with_suffix(".log.1"))
+    except OSError:
+        pass
+
+
 def die(msg, code=1):
-    print(f"\033[1;31m✗\033[0m {msg}", file=sys.stderr)
+    log(f"ERROR {msg}")
+    print(f"{_c('1;31', '✗')} {msg}", file=sys.stderr)
     sys.exit(code)
 
 
 def info(msg):
-    print(f"\033[1;36m›\033[0m {msg}", flush=True)
+    log(f"INFO  {msg}")
+    print(f"{_c('1;36', '›')} {msg}", flush=True)
 
 
 def ok(msg):
-    print(f"\033[1;32m✓\033[0m {msg}", flush=True)
+    log(f"OK    {msg}")
+    print(f"{_c('1;32', '✓')} {msg}", flush=True)
+
+
+def warn(msg):
+    log(f"WARN  {msg}")
+    print(f"  {_c('1;33', '⚠')} {msg}", flush=True)
 
 
 def have(cmd):
@@ -71,12 +99,17 @@ def have(cmd):
 
 
 def run(cmd, check=False, quiet=True, **kw):
+    if VERBOSE:
+        print(_c("2", "  $ " + " ".join(str(c) for c in cmd)), flush=True)
     try:
-        return subprocess.run(cmd, check=check, text=True,
-                              stdout=subprocess.PIPE if quiet else None,
-                              stderr=subprocess.PIPE if quiet else None, **kw)
+        r = subprocess.run(cmd, check=check, text=True,
+                           stdout=subprocess.PIPE if quiet else None,
+                           stderr=subprocess.PIPE if quiet else None, **kw)
     except FileNotFoundError:
-        return subprocess.CompletedProcess(cmd, 127, "", "")
+        r = subprocess.CompletedProcess(cmd, 127, "", "")
+    if r.returncode not in (0, None) and cmd and cmd[0] not in ("pgrep", "pkill", "fc-list"):
+        log(f"CMD   rc={r.returncode} {' '.join(map(str, cmd))} :: {(r.stderr or '').strip()[:200]}")
+    return r
 
 
 def load_state():
@@ -99,7 +132,7 @@ def xf_get(channel, prop):
         return None
     out = r.stdout.strip()
     if out.startswith("Value is an array"):
-        vals = [l.strip() for l in out.splitlines()[1:] if l.strip()]
+        vals = [ln.strip() for ln in out.splitlines()[1:] if ln.strip()]
         return {"array": vals}
     return out
 
@@ -188,7 +221,7 @@ def install_themes(force=False):
             info(f"Téléchargement {url.rsplit('/', 1)[-1][:-4]}…")
             dest = tmp / key
             if run(["git", "clone", "--depth", "1", url, str(dest)], quiet=False).returncode != 0:
-                print(f"  ⚠ échec du clonage de {key}, on continue")
+                warn(f"échec du clonage de {key}, on continue")
                 continue
             if key == "gtk":
                 r = run(["bash", "./install.sh", "-c", "dark", "-c", "light", "-l"], cwd=dest, quiet=False)
@@ -270,7 +303,7 @@ def picom_conf_path():
 
 def setup_picom(st, strength=None):
     if not have("picom"):
-        print("  ⚠ picom absent (sudo apt install picom) — pas de flou")
+        warn("picom absent (sudo apt install picom) — pas de flou")
         return
     src = data_dir() / "config" / "picom" / "picom.conf"
     dst = picom_conf_path()
@@ -299,7 +332,7 @@ def restart_picom():
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     time.sleep(1.5)
     if proc.poll() is not None:  # GPU/VM sans OpenGL : repli sans flou mais avec transparence
-        print("  ⚠ picom (glx) n'a pas démarré — repli sur xrender (transparence sans flou)")
+        warn("picom (glx) n'a pas démarré — repli sur xrender (transparence sans flou)")
         subprocess.Popen(["picom", "--config", str(picom_conf_path()), "--backend", "xrender"],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
@@ -327,7 +360,8 @@ def setup_dock(st, enabled=True):
         remove_xfce_dock(st)
         ok("Dock désactivé")
         return
-    if have("plank"):
+    engine = os.environ.get("KALI_GLASS_DOCK", "auto")  # auto | plank | xfce
+    if engine == "plank" or (engine == "auto" and have("plank")):
         setup_plank(st)
     else:
         setup_xfce_dock(st)
@@ -374,7 +408,7 @@ def _plugin_ids():
 def setup_xfce_dock(st):
     """Dock de secours (plank absent) : panneau XFCE en bas, centré, translucide."""
     if not have("xfconf-query"):
-        print("  ⚠ xfconf-query absent — pas de dock")
+        warn("xfconf-query absent — pas de dock")
         return
     if st["settings"].get("xfce_dock_panel"):
         ok("Dock XFCE déjà en place")
@@ -395,7 +429,8 @@ def setup_xfce_dock(st):
     files = dock_desktop_files()
     cfg = HOME / ".config" / "xfce4" / "panel"
     cfg.mkdir(parents=True, exist_ok=True)
-    if run(["sh", "-c", "ls /usr/lib/*/xfce4/panel/plugins/libdocklike* /usr/lib/xfce4/panel/plugins/libdocklike* 2>/dev/null"]).stdout.strip():
+    docklike = "ls /usr/lib/*/xfce4/panel/plugins/libdocklike* /usr/lib/xfce4/panel/plugins/libdocklike* 2>/dev/null"
+    if run(["sh", "-c", docklike]).stdout.strip():
         xf_set(st, "xfce4-panel", f"/plugins/plugin-{plug}", "docklike", "string")
         (cfg / f"docklike-{plug}.rc").write_text("[user]\npinned=" + ";".join(str(f) for f in files) + ";\n")
         ids, kind = [plug], "docklike"
@@ -476,7 +511,7 @@ def set_mode(st, mode):
         xf_set(st, "xsettings", "/Net/ThemeName", gtk, "string")
         xf_set(st, "xfwm4", "/general/theme", gtk, "string")
     else:
-        print("  ⚠ thème WhiteSur absent — lance : kali-glass install-themes")
+        warn("thème WhiteSur absent — lance : kali-glass install-themes")
     if icons:
         xf_set(st, "xsettings", "/Net/IconThemeName", icons, "string")
     if cursors:
@@ -523,7 +558,7 @@ def reload_panel():
 
 def cmd_apply(a):
     st = load_state()
-    print("\n  \033[1m Kali Glass \033[0m — bureau verre façon macOS\n")
+    print(f"\n  {_c('1', 'Kali Glass ' + VERSION)} — bureau verre façon macOS\n")
     if not a.no_themes:
         install_themes()
     st["settings"].setdefault("panel_opacity", 35)
@@ -562,12 +597,16 @@ def cmd_mode(a):
 
 
 def cmd_blur(a):
+    if not 0 <= a.strength <= 20:
+        die("La force du flou doit être entre 0 et 20.")
     st = load_state()
     setup_picom(st, a.strength)
     save_state(st)
 
 
 def cmd_panel(a):
+    if not 0 <= a.percent <= 100:
+        die("L'opacité doit être entre 0 et 100.")
     st = load_state()
     set_panel_opacity(st, a.percent)
     save_state(st)
@@ -675,9 +714,76 @@ def cmd_status(a):
                      indent=2, ensure_ascii=False))
 
 
+def _picom_version():
+    out = run(["picom", "--version"]).stdout.strip()
+    m = re.search(r"(\d+)(?:\.(\d+))?", out)
+    return (int(m.group(1)), int(m.group(2) or 0), out) if m else (0, 0, out)
+
+
+def cmd_doctor(a):
+    """Diagnostic complet : ce qui marche, ce qui manque, et comment le réparer."""
+    rows, errors = [], 0
+
+    def check(name, good, detail="", hint="", level="err"):
+        nonlocal errors
+        sym = _c("1;32", "✓") if good else (_c("1;31", "✗") if level == "err" else _c("1;33", "⚠"))
+        if not good and level == "err":
+            errors += 1
+        rows.append((sym, name, detail, "" if good else hint))
+
+    desk = os.environ.get("XDG_CURRENT_DESKTOP", "")
+    check("Session XFCE", "XFCE" in desk.upper(), desk or "inconnue", "Kali Glass vise le bureau XFCE (défaut de Kali)", "warn")
+    check("Affichage X11", bool(os.environ.get("DISPLAY")) and not os.environ.get("WAYLAND_DISPLAY"),
+          os.environ.get("DISPLAY", "aucun"), "picom et Plank exigent X11", "warn")
+    check("xfconf-query", have("xfconf-query"), "", "sudo apt install xfconf")
+    if have("picom"):
+        ma, mi, raw = _picom_version()
+        check("picom ≥ 10", ma >= 10, raw, "picom trop ancien : le flou dual_kawase demande la v10+")
+        check("picom actif", bool(run(["pgrep", "-x", "picom"]).stdout.strip()), "", "kali-glass blur 7", "warn")
+    else:
+        check("picom", False, "absent", "sudo apt install picom")
+    if have("glxinfo"):
+        gl = run(["glxinfo", "-B"]).stdout
+        renderer = (re.search(r"OpenGL renderer string: (.*)", gl) or [None, "?"])[1]
+        soft = "llvmpipe" in renderer or "softpipe" in renderer
+        check("Accélération 3D (flou)", not soft, renderer,
+              "Rendu logiciel : active l'accélération 3D de ta VM, sinon le flou sera lent", "warn")
+    else:
+        check("Accélération 3D (flou)", False, "glxinfo absent", "sudo apt install mesa-utils pour vérifier", "warn")
+    dock = "plank" if have("plank") else ("panneau XFCE" if have("xfconf-query") else "aucun")
+    check("Dock", dock != "aucun", dock, "sudo apt install plank (ou xfce4-docklike-plugin)", "warn")
+    check("Thème GTK WhiteSur", bool(find_theme("dark")), find_theme("dark") or "absent", "kali-glass install-themes")
+    check("Icônes WhiteSur", bool(find_icons("dark")), find_icons("dark") or "absent", "kali-glass install-themes", "warn")
+    fams = run(["fc-list", ":", "family"]).stdout or ""
+    check("Police Inter", any(f.split(",")[0].strip() == "Inter" for f in fams.splitlines()), "",
+          "sudo apt install fonts-inter", "warn")
+    try:
+        import gi  # noqa: F401
+        gi_ok = True
+    except Exception:
+        gi_ok = False
+    check("PyGObject (Glass Center)", gi_ok, "", "sudo apt install python3-gi gir1.2-gtk-3.0", "warn")
+    try:
+        check("Fonds d'écran", len(wallpapers()) > 0, f"{len(wallpapers())} dans {data_dir()}", "réinstalle le paquet")
+    except SystemExit:
+        check("Fonds d'écran", False, "introuvables", "réinstalle le paquet")
+    st = load_state()
+    check("Thème appliqué", bool(st["settings"].get("applied")), STATE_FILE if STATE_FILE.exists() else "jamais",
+          "kali-glass apply", "warn")
+
+    print(f"\n  {_c('1', 'Kali Glass ' + VERSION + ' — diagnostic')}\n")
+    w = max(len(r[1]) for r in rows)
+    for sym, name, detail, hint in rows:
+        line = f"  {sym} {name.ljust(w)}  {_c('2', str(detail))}"
+        print(line + (f"\n      → {hint}" if hint else ""))
+    print(f"\n  Journal : {LOG_FILE}\n")
+    sys.exit(1 if errors else 0)
+
+
 def main():
     p = argparse.ArgumentParser(prog="kali-glass", description="Bureau Glass façon macOS pour Kali Linux")
     p.add_argument("--version", action="version", version=VERSION)
+    p.add_argument("-v", "--verbose", action="store_true", help="affiche chaque commande exécutée")
     sp = p.add_subparsers(dest="cmd", required=True)
     s = sp.add_parser("apply"); s.add_argument("--light", action="store_true"); s.add_argument("--wallpaper")
     s.add_argument("--no-themes", action="store_true"); s.add_argument("--keep-mode", action="store_true")
@@ -694,8 +800,13 @@ def main():
     s = sp.add_parser("login"); s.add_argument("--wallpaper", default="aurora"); s.set_defaults(f=cmd_login)
     sp.add_parser("restore").set_defaults(f=cmd_restore)
     sp.add_parser("status").set_defaults(f=cmd_status)
+    sp.add_parser("doctor", help="diagnostic de l'installation").set_defaults(f=cmd_doctor)
     a = p.parse_args()
-    if os.geteuid() == 0 and a.cmd not in ("login", "list", "status"):
+    global VERBOSE
+    VERBOSE = a.verbose
+    log(f"RUN   kali-glass {' '.join(sys.argv[1:])}")
+    if os.geteuid() == 0 and a.cmd not in ("login", "list", "status", "doctor") \
+            and not os.environ.get("KALI_GLASS_ALLOW_ROOT"):
         die("Ne lance pas kali-glass avec sudo (les réglages sont propres à ton utilisateur).")
     a.f(a)
 

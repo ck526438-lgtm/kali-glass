@@ -1,0 +1,100 @@
+.\" -*- coding: UTF-8 -*-
+.TH KALI-GLASS 1 "Novembre 2026" "kali-glass 1.1.0" "Commandes utilisateur"
+.SH NOM
+kali-glass \- bureau verre (glassmorphism) façon macOS pour Kali Linux (XFCE)
+.SH SYNOPSIS
+.B kali-glass
+[\fB\-v\fR] \fICOMMANDE\fR [\fIARGUMENTS\fR]
+.SH DESCRIPTION
+\fBkali-glass\fR applique et pilote le thème Kali Glass : fonds d'écran en verre
+dépoli, flou en temps réel par \fBpicom\fR(1), thème WhiteSur, barre du haut
+translucide et dock. Chaque réglage modifié est sauvegardé avant d'être changé,
+ce qui permet un retour exact à l'état d'origine avec \fBrestore\fR.
+.PP
+Les réglages sont propres à l'utilisateur : ne pas lancer avec \fBsudo\fR,
+sauf pour la commande \fBlogin\fR.
+.SH COMMANDES
+.TP
+\fBapply\fR [\fB\-\-light\fR] [\fB\-\-wallpaper\fR \fINOM\fR] [\fB\-\-no\-themes\fR]
+Applique tout le thème. Télécharge les thèmes WhiteSur s'ils sont absents.
+.TP
+\fBwallpaper\fR \fINOM\fR|\fICHEMIN\fR
+Change le fond d'écran (nom fourni ou chemin d'une image).
+.TP
+\fBlist\fR
+Liste les fonds d'écran fournis.
+.TP
+\fBmode\fR \fBdark\fR|\fBlight\fR
+Bascule entre le thème sombre et le thème clair.
+.TP
+\fBblur\fR \fI0\-20\fR
+Force du flou du verre. 0 désactive le flou.
+.TP
+\fBpanel\-opacity\fR \fI0\-100\fR
+Opacité de la barre du haut, en pourcentage.
+.TP
+\fBdock\fR \fBon\fR|\fBoff\fR
+Active ou retire le dock (Plank, ou panneau XFCE si Plank est absent).
+.TP
+\fBdynamic\fR \fBon\fR|\fBoff\fR
+Fond d'écran qui change selon l'heure de la journée.
+.TP
+\fBinstall\-themes\fR
+(Re)télécharge les thèmes GTK, icônes et curseurs WhiteSur.
+.TP
+\fBlogin\fR [\fB\-\-wallpaper\fR \fINOM\fR]
+Met le fond sur l'écran de connexion LightDM (nécessite \fBsudo\fR).
+.TP
+\fBrestore\fR
+Restaure exactement les réglages d'avant Kali Glass.
+.TP
+\fBstatus\fR
+Affiche l'état actuel au format JSON.
+.TP
+\fBdoctor\fR
+Diagnostic : session, compositeur, accélération 3D, dock, thèmes, polices.
+Code de sortie 1 si une erreur bloquante est détectée.
+.SH OPTIONS
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Affiche chaque commande système exécutée.
+.TP
+\fB\-\-version\fR
+Affiche la version.
+.SH ENVIRONNEMENT
+.TP
+\fBKALI_GLASS_DOCK\fR
+\fBauto\fR (défaut), \fBplank\fR ou \fBxfce\fR : moteur du dock.
+.TP
+\fBKALI_GLASS_DATA\fR
+Dossier de données alternatif (contenant \fIwallpapers/\fR et \fIconfig/\fR).
+.TP
+\fBNO_COLOR\fR
+Désactive les couleurs.
+.SH FICHIERS
+.TP
+\fI~/.config/kali\-glass/state.json\fR
+Réglages et sauvegarde des valeurs d'origine.
+.TP
+\fI~/.cache/kali\-glass/kali\-glass.log\fR
+Journal des opérations.
+.TP
+\fI~/.config/picom/kali\-glass.conf\fR
+Configuration du compositeur.
+.TP
+\fI/usr/share/kali\-glass/\fR
+Fonds d'écran et configurations fournis.
+.SH EXEMPLES
+.nf
+kali-glass apply
+kali-glass wallpaper ocean
+kali-glass blur 9
+kali-glass doctor
+sudo kali-glass login --wallpaper midnight
+.fi
+.SH VOIR AUSSI
+\fBglass-center\fR(1), \fBpicom\fR(1), \fBplank\fR(1), \fBxfconf-query\fR(1)
+.SH BUGS
+https://github.com/ck526438-lgtm/kali-glass/issues
+.SH AUTEUR
+ck526438-lgtm

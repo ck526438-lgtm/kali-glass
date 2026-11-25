@@ -14,10 +14,7 @@ fi
 if dpkg -s kali-glass >/dev/null 2>&1; then
   sudo apt-get remove -y kali-glass
 else
-  sudo rm -rf /usr/share/kali-glass /usr/share/backgrounds/kali-glass
-  sudo rm -f /usr/bin/kali-glass /usr/bin/glass-center \
-    /usr/share/applications/glass-center.desktop \
-    /usr/share/icons/hicolor/scalable/apps/glass-center.svg
+  sudo make -C "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" uninstall PREFIX=/usr >/dev/null
 fi
 
 if [[ -f /etc/lightdm/lightdm-gtk-greeter.conf.kali-glass.bak ]]; then

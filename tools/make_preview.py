@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Génère docs/preview.jpg : aperçu (simulé) du bureau Kali Glass."""
-import sys
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
@@ -80,7 +79,8 @@ for i, (t, c) in enumerate(lines):
     if c: d.text((tb[0] + 20, tb[1] + 48 + i * 26), t, font=mono, fill=c)
 
 # dock
-icons = [(66, 133, 244), (52, 52, 64), (255, 120, 40), (232, 92, 60), (40, 120, 200), (120, 200, 120), (138, 61, 255), (110, 110, 130)]
+icons = [(66, 133, 244), (52, 52, 64), (255, 120, 40), (232, 92, 60),
+         (40, 120, 200), (120, 200, 120), (138, 61, 255), (110, 110, 130)]
 n, s, gap = len(icons), 60, 14
 dw = n * s + (n + 1) * gap
 dx0, dy0 = (W - dw) // 2, H - s - 2 * gap - 10

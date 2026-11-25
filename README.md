@@ -7,6 +7,14 @@
 **Le bureau Kali Linux en mode verre façon macOS.**
 Fonds d'écran en verre dépoli · flou en temps réel · barre de menus translucide · dock avec effet loupe · appli de réglages
 
+[![CI](https://github.com/ck526438-lgtm/kali-glass/actions/workflows/release.yml/badge.svg)](https://github.com/ck526438-lgtm/kali-glass/actions/workflows/release.yml)
+[![Release](https://img.shields.io/github/v/release/ck526438-lgtm/kali-glass?color=4f7cff)](https://github.com/ck526438-lgtm/kali-glass/releases/latest)
+[![Téléchargements](https://img.shields.io/github/downloads/ck526438-lgtm/kali-glass/total?color=8a3dff)](https://github.com/ck526438-lgtm/kali-glass/releases)
+[![Licence MIT](https://img.shields.io/badge/licence-MIT-22c55e)](LICENSE)
+![Kali Linux XFCE](https://img.shields.io/badge/Kali_Linux-XFCE-367bf0?logo=kalilinux&logoColor=white)
+
+**Français** · [English](README.en.md)
+
 ![Aperçu](docs/preview.jpg)
 
 <sub>Aperçu simulé. Le rendu réel dépend de ta carte graphique (le flou demande OpenGL).</sub>
@@ -41,12 +49,14 @@ cd kali-glass
 
 ### Option 2 : paquet .deb
 
-Télécharge `kali-glass_1.0.0_all.deb` dans les [Releases](https://github.com/ck526438-lgtm/kali-glass/releases), puis :
+Télécharge le `.deb` de la [dernière version](https://github.com/ck526438-lgtm/kali-glass/releases/latest), puis :
 
 ```bash
-sudo apt install ./kali-glass_1.0.0_all.deb
+sudo apt install ./kali-glass_*_all.deb
 kali-glass apply        # sans sudo : les réglages sont propres à ton utilisateur
 ```
+
+Vérifier l'intégrité du téléchargement : `sha256sum -c SHA256SUMS --ignore-missing`.
 
 Déconnecte-toi puis reconnecte-toi pour que tout soit pris en compte.
 
@@ -58,9 +68,12 @@ Menu → **Glass Center**, ou la commande `glass-center`.
 
 <img src="docs/glass-center.png" width="640" alt="Glass Center">
 
+<img src="docs/glass-center-doctor.png" width="640" alt="Glass Center : diagnostic">
+
 - **Fonds d'écran** : galerie, ta propre image, fond dynamique
 - **Apparence** : mode clair/sombre, intensité du flou, redémarrage du compositeur
 - **Dock & barre** : activer le dock, opacité de la barre du haut
+- **Diagnostic** : vérifie dépendances, carte graphique et thèmes, avec la solution à chaque problème
 - **Appliquer Kali Glass** / **Restaurer l'original**
 
 ### kali-glass (ligne de commande)
@@ -77,9 +90,21 @@ kali-glass dynamic on            # fond qui suit l'heure
 sudo kali-glass login            # fond Glass sur l'écran de connexion
 kali-glass restore               # remet tout comme avant
 kali-glass status                # état actuel
+kali-glass doctor                # diagnostic : ce qui manque et comment le réparer
+kali-glass -v apply              # mode détaillé : affiche chaque commande
 ```
 
+Documentation complète : `man kali-glass`. L'autocomplétion bash (touche Tab) est installée avec le paquet.
+
 ## 🛠 Dépannage
+
+Commence toujours par :
+
+```bash
+kali-glass doctor
+```
+
+Le journal détaillé est dans `~/.cache/kali-glass/kali-glass.log`.
 
 | Problème | Solution |
 |---|---|
@@ -93,8 +118,10 @@ kali-glass status                # état actuel
 
 ```
 kali-glass/
-├── apps/glass-center/      appli GTK « Glass Center » (+ icône, .desktop)
+├── apps/glass-center/      appli GTK « Glass Center » (+ icône, .desktop, AppStream)
 ├── bin/kali-glass          outil en ligne de commande (Python)
+├── man/ · completions/     pages man et autocomplétion bash
+├── tests/                  tests pytest (xfconf simulé)
 ├── config/
 │   ├── picom/picom.conf    flou, ombres, coins arrondis
 │   ├── plank/KaliGlass/    thème du dock en verre
@@ -102,7 +129,7 @@ kali-glass/
 ├── wallpapers/             6 fonds d'écran 4K
 ├── tools/                  générateurs des fonds et de l'aperçu
 ├── packaging/build-deb.sh  construit le paquet .deb
-├── install.sh / uninstall.sh
+├── Makefile · install.sh · uninstall.sh
 └── .github/workflows/      CI : vérifie, construit le .deb, publie la release
 ```
 
@@ -112,13 +139,15 @@ Régénérer les fonds (autre résolution, par ex. 2560×1440) :
 python3 tools/generate_wallpapers.py wallpapers 2560 1440
 ```
 
-## 📦 Publier une version
+## 👩‍💻 Développement
 
 ```bash
-git tag v1.0.0 && git push origin v1.0.0
+make test        # lint (ruff, shellcheck) + tests (pytest, sans bureau)
+make deb         # construit dist/kali-glass_<version>_all.deb
+sudo make install
 ```
 
-GitHub Actions construit `kali-glass_1.0.0_all.deb` et `kali-glass-wallpapers.zip` et les attache à la release.
+Voir [CONTRIBUTING.md](CONTRIBUTING.md). Pour publier une version : change `VERSION` dans `bin/kali-glass`, complète [CHANGELOG.md](CHANGELOG.md) et pousse sur `main`. La CI teste, construit le .deb et publie la release avec ses notes et `SHA256SUMS`.
 
 ## 🙏 Crédits
 

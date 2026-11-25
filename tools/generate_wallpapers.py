@@ -3,7 +3,6 @@
 
 Usage : python3 tools/generate_wallpapers.py [dossier_sortie] [largeur] [hauteur]
 """
-import math
 import random
 import sys
 from pathlib import Path
@@ -140,5 +139,5 @@ def make(name, top, bottom, colors, light, seed):
 
 
 if __name__ == "__main__":
-    for i, (n, (t, b, c, l)) in enumerate(PALETTES.items()):
-        make(n, t, b, c, l, seed=42 + i * 7)
+    for i, (n, (top, bottom, colors, light)) in enumerate(PALETTES.items()):
+        make(n, top, bottom, colors, light, seed=42 + i * 7)

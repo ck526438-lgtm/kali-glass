@@ -12,7 +12,7 @@ import gi
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 gi.require_version("GdkPixbuf", "2.0")
-from gi.repository import Gdk, GdkPixbuf, GLib, Gtk  # noqa: E402
+from gi.repository import GdkPixbuf, GLib, Gtk  # noqa: E402
 
 APP_ID = "io.github.ck526438.GlassCenter"
 STATE = Path.home() / ".config" / "kali-glass" / "state.json"
@@ -33,6 +33,13 @@ def data_dir():
     return Path("/usr/share/kali-glass")
 
 
+def version():
+    try:
+        return subprocess.run([cli(), "--version"], text=True, stdout=subprocess.PIPE, timeout=5).stdout.strip()
+    except Exception:
+        return "?"
+
+
 def state():
     try:
         return json.loads(STATE.read_text()).get("settings", {})
@@ -51,6 +58,7 @@ window.glass.light.opaque { background-color: #eef0f8; }
 window.glass label, window.glass .ghost { color: #f2f4ff; }
 window.glass.light label, window.glass.light .ghost { color: #1c1d26; }
 window.glass .big label { color: white; }
+window.glass textview, window.glass textview text { background-color: transparent; color: inherit; }
 window.glass.light {
   background-image: none;
   background-color: rgba(250, 250, 255, 0.70);
@@ -156,6 +164,7 @@ class GlassCenter(Gtk.Window):
             ("wall", "🖼  Fonds d'écran", self.page_wallpapers()),
             ("look", "✨  Apparence", self.page_look()),
             ("dock", "⚓  Dock & barre", self.page_dock()),
+            ("doctor", "🩺  Diagnostic", self.page_doctor()),
             ("about", "ℹ  À propos", self.page_about()),
         ]
         for key, label, widget in pages:
@@ -289,16 +298,42 @@ class GlassCenter(Gtk.Window):
 
         op = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 5)
         op.set_value(self.st.get("panel_opacity", 35)); op.set_size_request(240, -1)
-        op.connect("button-release-event", lambda s, _e: self.run("panel-opacity", str(int(s.get_value())), msg="Barre…") or False)
+        op.connect("button-release-event",
+                   lambda s, _e: self.run("panel-opacity", str(int(s.get_value())), msg="Barre…") or False)
         self.card(box, "Opacité de la barre du haut", "Plus c'est bas, plus on voit le fond à travers.", op)
         return sc
+
+    def page_doctor(self):
+        sc, box = self.page()
+        self.header(box, "Diagnostic", "Vérifie les dépendances, la carte graphique et les thèmes.")
+        btn = Gtk.Button(label="Lancer le diagnostic")
+        btn.get_style_context().add_class("big")
+        btn.set_halign(Gtk.Align.START)
+        self.doctor_view = Gtk.TextView(editable=False, cursor_visible=False, monospace=True,
+                                        wrap_mode=Gtk.WrapMode.WORD_CHAR)
+        self.doctor_view.get_style_context().add_class("card")
+        self.doctor_view.get_buffer().set_text("Clique sur « Lancer le diagnostic ».")
+        btn.connect("clicked", self.on_doctor)
+        box.pack_start(btn, False, False, 0)
+        box.pack_start(self.doctor_view, True, True, 0)
+        return sc
+
+    def on_doctor(self, _b):
+        self.doctor_view.get_buffer().set_text("Analyse en cours…")
+
+        def work():
+            env = dict(os.environ, NO_COLOR="1")
+            r = subprocess.run([cli(), "doctor"], text=True, env=env,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            GLib.idle_add(self.doctor_view.get_buffer().set_text, r.stdout.strip() or "Aucune sortie.")
+        threading.Thread(target=work, daemon=True).start()
 
     def page_about(self):
         sc, box = self.page()
         self.header(box, "Kali Glass", "Bureau verre façon macOS pour Kali Linux (XFCE).")
         txt = Gtk.Label(xalign=0, wrap=True, selectable=True)
         txt.set_markup(
-            "Version 1.0.0 — par <b>ck526438-lgtm</b>\n\n"
+            f"Version {version()} — par <b>ck526438-lgtm</b>\n\n"
             "• Thème GTK, icônes et curseurs : WhiteSur de vinceliuice (GPL-3.0 / MIT)\n"
             "• Flou : picom (dual_kawase)\n"
             "• Dock : Plank\n\n"
@@ -316,7 +351,8 @@ class GlassCenter(Gtk.Window):
         self.status.set_text(msg)
 
         def work():
-            r = subprocess.run([cli(), *args], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            r = subprocess.run([cli(), *args], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               env=dict(os.environ, NO_COLOR="1"))
             out = (r.stdout or "").strip().splitlines()
             last = out[-1] if out else ""
             GLib.idle_add(self.done, r.returncode == 0, last)
