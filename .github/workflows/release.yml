@@ -58,7 +58,7 @@ jobs:
       - name: Pack des fonds fixes
         run: cd wallpapers && zip -9 ../dist/kali-glass-wallpapers.zip *.jpg
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: package
           path: dist/*
@@ -108,7 +108,7 @@ jobs:
             -vf scale=1920:1080:flags=lanczos -c:v libx264 -preset veryfast -crf 20 -pix_fmt yuv420p \
             -movflags +faststart live/kali-glass-live-${{ matrix.name }}-1080p.mp4
           ls -la live
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: live-${{ matrix.name }}
           path: live/*.mp4
