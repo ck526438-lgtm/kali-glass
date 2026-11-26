@@ -2,6 +2,7 @@
 """Glass Center — panneau de réglages du bureau Kali Glass (GTK 3)."""
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -38,6 +39,18 @@ def version():
         return subprocess.run([cli(), "--version"], text=True, stdout=subprocess.PIPE, timeout=5).stdout.strip()
     except Exception:
         return "?"
+
+
+def live_videos():
+    exts = {".mp4", ".webm", ".mkv", ".mov", ".m4v", ".avi", ".gif"}
+    out = []
+    for d in (Path("/usr/share/kali-glass/live"), Path.home() / ".local/share/kali-glass/live"):
+        if d.is_dir():
+            for f in sorted(d.iterdir()):
+                if f.suffix.lower() in exts:
+                    n = re.sub(r"-\d{3,4}p$", "", re.sub(r"^kali-glass-live-", "", f.stem))
+                    out.append((n, f))
+    return out
 
 
 def state():
@@ -162,6 +175,7 @@ class GlassCenter(Gtk.Window):
         self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, transition_duration=180)
         pages = [
             ("wall", "🖼  Fonds d'écran", self.page_wallpapers()),
+            ("live", "🎬  Fonds animés", self.page_live()),
             ("look", "✨  Apparence", self.page_look()),
             ("dock", "⚓  Dock & barre", self.page_dock()),
             ("doctor", "🩺  Diagnostic", self.page_doctor()),
@@ -262,6 +276,113 @@ class GlassCenter(Gtk.Window):
         self.card(box, "Fond dynamique", "Clair le matin, océan l'après-midi, coucher de soleil le soir, nuit ensuite.", dyn)
         return sc
 
+    # ───────── fonds animés ─────────
+    def page_live(self):
+        sc, box = self.page()
+        self.header(box, "Fonds animés", "Vidéos en boucle derrière tes fenêtres, jusqu'en 4K. "
+                    "MP4, WebM, MKV, MOV ou GIF.")
+        self.live_flow = Gtk.FlowBox(max_children_per_line=3, min_children_per_line=2,
+                                     selection_mode=Gtk.SelectionMode.NONE,
+                                     column_spacing=10, row_spacing=10, homogeneous=True)
+        box.pack_start(self.live_flow, False, False, 0)
+
+        actions = Gtk.Box(spacing=10)
+        add = Gtk.Button(label="Ajouter une vidéo…")
+        add.get_style_context().add_class("ghost")
+        add.connect("clicked", self.on_live_add)
+        dl = Gtk.Button(label="Télécharger le pack 4K")
+        dl.get_style_context().add_class("big")
+        dl.connect("clicked", lambda _b: self.run("live", "download", msg="Téléchargement du pack (quelques minutes)…",
+                                                   then=self.refresh_live))
+        stop = Gtk.Button(label="Arrêter")
+        stop.get_style_context().add_class("ghost")
+        stop.connect("clicked", lambda _b: self.run("live", "stop", msg="Arrêt du fond animé…", then=self.refresh_live))
+        actions.pack_start(dl, False, False, 0)
+        actions.pack_start(add, False, False, 0)
+        actions.pack_end(stop, False, False, 0)
+        box.pack_start(actions, False, False, 0)
+
+        lv = self.st.get("live", {})
+        for key, title, desc, default in [
+            ("pause-fullscreen", "Pause en plein écran", "Économise le processeur quand une fenêtre cache le bureau.",
+             lv.get("pause_fullscreen", True)),
+            ("pause-battery", "Pause sur batterie", "Fige la vidéo quand le portable n'est pas branché.",
+             lv.get("pause_battery", True)),
+            ("audio", "Son de la vidéo", "Désactivé par défaut.", lv.get("audio", False)),
+        ]:
+            sw = Gtk.Switch(active=bool(default))
+            sw.connect("state-set", lambda _s, on, k=key: self.run("live", "options", f"--{k}", "on" if on else "off",
+                                                                     msg="Options…") or False)
+            self.card(box, title, desc, sw)
+
+        speed = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0.25, 2.0, 0.25)
+        speed.set_value(lv.get("speed", 1.0))
+        speed.set_size_request(240, -1)
+        speed.connect("button-release-event",
+                      lambda s, _e: self.run("live", "options", "--speed", f"{s.get_value():.2f}", msg="Vitesse…") or False)
+        self.card(box, "Vitesse", "Ralentis pour un effet plus calme.", speed)
+        self.card(box, "Astuce", "Clic droit sur le bureau animé : Glass Center, terminal, pause, arrêt.",
+                  Gtk.Label(label=""))
+        self.refresh_live()
+        return sc
+
+    def refresh_live(self):
+        for c in self.live_flow.get_children():
+            self.live_flow.remove(c)
+        self.live_thumbs = {}
+        self.st = state()
+        lv = self.st.get("live", {})
+        cur = lv.get("video") if lv.get("active") else None
+        vids = live_videos()
+        if not vids:
+            lab = Gtk.Label(label="Aucune vidéo pour l'instant. Télécharge le pack ou ajoute la tienne.", xalign=0)
+            lab.get_style_context().add_class("subtitle")
+            self.live_flow.add(lab)
+        for name, path in vids:
+            btn = Gtk.Button(relief=Gtk.ReliefStyle.NONE)
+            btn.get_style_context().add_class("thumb")
+            if str(path) == cur:
+                btn.get_style_context().add_class("active")
+            v = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+            img = Gtk.Image.new_from_icon_name("video-x-generic", Gtk.IconSize.DIALOG)
+            img.set_size_request(240, 135)
+            v.pack_start(img, False, False, 0)
+            v.pack_start(Gtk.Label(label="▶ " + name.capitalize()), False, False, 0)
+            btn.add(v)
+            btn.connect("clicked", lambda _b, p=path: self.run("live", "set", str(p), msg="Fond animé…",
+                                                               then=self.refresh_live))
+            self.live_flow.add(btn)
+            self.live_thumbs[str(path)] = btn
+            self.load_video_thumb(path, img)
+        self.live_flow.show_all()
+
+    def load_video_thumb(self, path, img):
+        def work():
+            r = subprocess.run([cli(), "live", "thumb", str(path)], text=True, stdout=subprocess.PIPE,
+                               stderr=subprocess.DEVNULL, env=dict(os.environ, NO_COLOR="1"))
+            out = (r.stdout or "").strip().splitlines()
+            if r.returncode == 0 and out and Path(out[-1]).exists():
+                try:
+                    pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(out[-1], 240, 135, True)
+                    GLib.idle_add(img.set_from_pixbuf, pb)
+                except Exception:
+                    pass
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_live_add(self, _b):
+        d = Gtk.FileChooserDialog(title="Choisir une vidéo", transient_for=self, action=Gtk.FileChooserAction.OPEN)
+        d.add_buttons("Annuler", Gtk.ResponseType.CANCEL, "Utiliser", Gtk.ResponseType.OK)
+        f = Gtk.FileFilter()
+        f.set_name("Vidéos")
+        for m in ("video/mp4", "video/webm", "video/x-matroska", "video/quicktime", "image/gif"):
+            f.add_mime_type(m)
+        d.add_filter(f)
+        if d.run() == Gtk.ResponseType.OK:
+            path = d.get_filename()
+            self.run("live", "add", path, msg="Ajout…",
+                     then=lambda: self.run("live", "set", path, msg="Fond animé…", then=self.refresh_live))
+        d.destroy()
+
     def load_thumb(self, path, img):
         def work():
             try:
@@ -343,10 +464,11 @@ class GlassCenter(Gtk.Window):
         return sc
 
     # ───────── actions ─────────
-    def run(self, *args, msg="…"):
+    def run(self, *args, msg="…", then=None):
         if self.busy:
             return
         self.busy = True
+        self.then = then
         self.spinner.start()
         self.status.set_text(msg)
 
@@ -360,6 +482,7 @@ class GlassCenter(Gtk.Window):
 
     def done(self, success, last):
         self.busy = False
+        then, self.then = getattr(self, "then", None), None
         self.spinner.stop()
         clean = last.replace("\033[1;32m", "").replace("\033[1;31m", "").replace("\033[0m", "").replace("\033[1;36m", "")
         self.status.set_text(("✓ " if success else "✗ ") + (clean.lstrip("✓✗› ").strip() or ("Fait." if success else "Erreur.")))
@@ -367,6 +490,8 @@ class GlassCenter(Gtk.Window):
         cur = self.st.get("wallpaper")
         for n, b in self.thumbs.items():
             (b.get_style_context().add_class if n == cur else b.get_style_context().remove_class)("active")
+        if then and success:
+            then()
         return False
 
     def on_wallpaper(self, _b, name):

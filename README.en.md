@@ -29,9 +29,23 @@ Frosted-glass wallpapers · real-time blur · translucent menu bar · magnifying
 - **macOS look** — WhiteSur GTK/icons/cursors, window buttons on the left, Inter font
 - **Thin translucent top bar** with adjustable opacity
 - **Dock** — Plank with a glass theme and 150% zoom; an XFCE-panel dock is created automatically if Plank is unavailable (it left Debian testing in 2026)
+- **Animated 4K wallpapers** — any video (MP4, WebM, MKV, MOV, GIF) looping behind your windows, plus an official pack of 4 animated glass loops; auto-pause on fullscreen/maximized windows and on battery
 - **Light / dark mode**, **time-of-day wallpaper**, **login screen** wallpaper
 - **Exact rollback** — every setting is backed up before it changes; `kali-glass restore` puts everything back
 - **Built-in diagnostics** — `kali-glass doctor` tells you what's missing and how to fix it
+
+## Animated wallpapers
+
+<div align="center"><img src="docs/live-preview.webp" width="640" alt="Animated Aurora wallpaper"></div>
+
+```bash
+kali-glass live download              # official pack (4K or 1080p depending on your screen)
+kali-glass live set aurora            # aurora · ocean · sunset · midnight
+kali-glass live set ~/Videos/beach.mp4
+kali-glass live toggle | stop
+```
+
+Right-click the animated desktop for a quick menu. XFCE desktop icons are hidden while a video plays.
 
 ## Install
 

@@ -1,0 +1,268 @@
+#!/usr/bin/env python3
+"""kali-glass-live — lecteur de fond d'écran vidéo (boucle) pour XFCE/X11.
+
+Crée une fenêtre « bureau » par écran, tout en bas de la pile, et y incruste mpv.
+Se met en pause tout seul quand une fenêtre est en plein écran ou agrandie,
+et (optionnel) quand l'ordinateur est sur batterie.
+
+Normalement lancé par `kali-glass live set …`, pas à la main.
+Réglages lus dans ~/.config/kali-glass/state.json → settings.live
+"""
+import json
+import os
+import signal
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+gi.require_version("GdkX11", "3.0")
+from gi.repository import Gdk, GdkX11, GLib, Gtk  # noqa: E402,F401
+
+HOME = Path.home()
+STATE = HOME / ".config" / "kali-glass" / "state.json"
+CACHE = HOME / ".cache" / "kali-glass"
+PIDFILE = CACHE / "live.pid"
+LOG = CACHE / "kali-glass.log"
+RUNDIR = Path(os.environ.get("XDG_RUNTIME_DIR") or f"/tmp/kali-glass-{os.getuid()}")
+
+
+def log(msg):
+    try:
+        CACHE.mkdir(parents=True, exist_ok=True)
+        with LOG.open("a", encoding="utf-8") as f:
+            f.write(time.strftime("%Y-%m-%dT%H:%M:%S") + f" LIVE  {msg}\n")
+    except OSError:
+        pass
+
+
+def settings():
+    try:
+        return json.loads(STATE.read_text()).get("settings", {}).get("live", {})
+    except Exception:
+        return {}
+
+
+def sh(cmd):
+    try:
+        return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=3).stdout
+    except Exception:
+        return ""
+
+
+def active_window_covers_desktop():
+    """Vrai si la fenêtre active est en plein écran ou agrandie (le fond est caché → pause)."""
+    out = sh(["xprop", "-root", "_NET_ACTIVE_WINDOW"])
+    wid = out.strip().split()[-1] if "#" in out else ""
+    if not wid or wid in ("0x0", "0"):
+        return False
+    st = sh(["xprop", "-id", wid, "_NET_WM_STATE", "_NET_WM_WINDOW_TYPE"])
+    if "_NET_WM_WINDOW_TYPE_DESKTOP" in st or "_NET_WM_STATE_HIDDEN" in st:
+        return False
+    return "_NET_WM_STATE_FULLSCREEN" in st or (
+        "_NET_WM_STATE_MAXIMIZED_VERT" in st and "_NET_WM_STATE_MAXIMIZED_HORZ" in st)
+
+
+def on_battery():
+    for p in Path("/sys/class/power_supply").glob("*"):
+        try:
+            if (p / "type").read_text().strip() == "Battery" and (p / "status").read_text().strip() == "Discharging":
+                return True
+        except OSError:
+            continue
+    return False
+
+
+class Screen:
+    """Une fenêtre-bureau + un processus mpv pour un écran."""
+
+    def __init__(self, idx, geom, cfg):
+        self.idx, self.cfg = idx, cfg
+        self.sock = RUNDIR / f"kali-glass-live-{idx}.sock"
+        self.proc = None
+        self.started = 0.0
+        self.failures = 0
+        self.fallback = False
+        self.paused = False
+
+        w = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
+        w.set_title(f"Kali Glass Live {idx}")
+        w.set_wmclass("kali-glass-live", "Kali-glass-live")
+        w.set_type_hint(Gdk.WindowTypeHint.DESKTOP)
+        w.set_decorated(False)
+        w.set_skip_taskbar_hint(True)
+        w.set_skip_pager_hint(True)
+        w.set_accept_focus(False)
+        w.set_keep_below(True)
+        w.stick()
+        w.move(geom.x, geom.y)
+        w.set_default_size(geom.width, geom.height)
+        w.resize(geom.width, geom.height)
+        w.override_background_color(Gtk.StateFlags.NORMAL, Gdk.RGBA(0, 0, 0, 1))
+        w.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
+        w.connect("button-press-event", self.on_click)
+        w.show_all()
+        self.win = w
+        self.xid = w.get_window().get_xid()
+
+    def mpv_cmd(self):
+        c = self.cfg
+        cmd = ["mpv", f"--wid={self.xid}", c["video"],
+               "--loop-file=inf", "--panscan=1.0", "--keepaspect=yes",
+               "--no-osc", "--osd-level=0", "--no-input-default-bindings", "--input-vo-keyboard=no",
+               "--input-cursor=no", "--cursor-autohide=no", "--no-terminal", "--really-quiet",
+               "--profile=fast", f"--speed={c.get('speed', 1.0)}",
+               f"--input-ipc-server={self.sock}"]
+        # uniquement des sorties vidéo qui respectent --wid (sdl, par ex., ouvrirait sa propre fenêtre)
+        if self.fallback:
+            cmd += ["--vo=x11", "--hwdec=no"]
+        else:
+            cmd += ["--vo=gpu,xv,x11", "--hwdec=auto-safe"]
+        if not c.get("audio"):
+            cmd.append("--no-audio")
+        else:
+            cmd.append(f"--volume={c.get('volume', 40)}")
+        return cmd
+
+    def start(self):
+        try:
+            self.sock.unlink()
+        except OSError:
+            pass
+        self.proc = subprocess.Popen(self.mpv_cmd(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.started = time.time()
+        self.paused = False
+        log(f"écran {self.idx} : mpv lancé ({'repli x11' if self.fallback else 'gpu'}) {self.cfg['video']}")
+
+    def watchdog(self):
+        if self.proc and self.proc.poll() is not None:
+            quick = time.time() - self.started < 5
+            self.failures += 1
+            log(f"écran {self.idx} : mpv arrêté (code {self.proc.returncode})")
+            if quick and not self.fallback:
+                self.fallback = True  # pas d'OpenGL utilisable → sortie vidéo logicielle
+            if self.failures <= 5:
+                self.start()
+
+    def ipc(self, *command):
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                s.settimeout(0.5)
+                s.connect(str(self.sock))
+                s.sendall((json.dumps({"command": list(command)}) + "\n").encode())
+        except OSError:
+            pass
+
+    def set_paused(self, p):
+        if p != self.paused:
+            self.ipc("set_property", "pause", p)
+            self.paused = p
+
+    def stop(self):
+        if self.proc and self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(2)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+
+    def on_click(self, _w, ev):
+        if ev.button != 3:
+            return False
+        m = Gtk.Menu()
+        items = [
+            ("Glass Center", lambda *_: subprocess.Popen(["glass-center"])),
+            ("Ouvrir un terminal", lambda *_: subprocess.Popen(["xfce4-terminal"])),
+            ("Pause / Reprendre", lambda *_: subprocess.Popen(["kali-glass", "live", "toggle"])),
+            ("Arrêter le fond animé", lambda *_: subprocess.Popen(["kali-glass", "live", "stop"])),
+        ]
+        for label, cb in items:
+            it = Gtk.MenuItem(label=label)
+            it.connect("activate", cb)
+            m.append(it)
+        m.show_all()
+        m.popup_at_pointer(ev)
+        return True
+
+
+class LivePlayer:
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.manual_pause = False
+        RUNDIR.mkdir(parents=True, exist_ok=True)
+        display = Gdk.Display.get_default()
+        self.screens = []
+        for i in range(display.get_n_monitors()):
+            self.screens.append(Screen(i, display.get_monitor(i).get_geometry(), cfg))
+        # laisse le gestionnaire de fenêtres placer les fenêtres avant d'y incruster mpv
+        GLib.timeout_add(400, self._start_all)
+        GLib.timeout_add(2000, self.tick)
+        Gdk.Screen.get_default().connect("monitors-changed", lambda *_: self.reload())
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self.quit)
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, self.quit)
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGUSR1, self.toggle)
+
+    def _start_all(self):
+        for s in self.screens:
+            s.start()
+        return False
+
+    def tick(self):
+        cfg = self.cfg
+        auto = (cfg.get("pause_fullscreen", True) and active_window_covers_desktop()) or \
+               (cfg.get("pause_battery", True) and on_battery())
+        for s in self.screens:
+            s.watchdog()
+            s.set_paused(self.manual_pause or auto)
+        return True
+
+    def toggle(self):
+        self.manual_pause = not self.manual_pause
+        log("pause manuelle" if self.manual_pause else "reprise manuelle")
+        self.tick()
+        return True
+
+    def reload(self):
+        log("écrans modifiés → redémarrage du lecteur")
+        for s in self.screens:
+            s.stop()
+        os.execv(sys.executable, [sys.executable, *sys.argv])
+
+    def quit(self):
+        for s in self.screens:
+            s.stop()
+        Gtk.main_quit()
+        return False
+
+
+def main():
+    if not os.environ.get("DISPLAY"):
+        sys.exit("kali-glass-live : aucune session X11 (DISPLAY vide).")
+    cfg = settings()
+    if not cfg.get("video") or not Path(cfg["video"]).exists():
+        sys.exit("kali-glass-live : aucune vidéo configurée. Utilise : kali-glass live set <vidéo>")
+    CACHE.mkdir(parents=True, exist_ok=True)
+    try:  # une seule instance
+        old = int(PIDFILE.read_text())
+        if old != os.getpid() and Path(f"/proc/{old}").exists() and "kali-glass-live" in Path(f"/proc/{old}/cmdline").read_text():
+            os.kill(old, signal.SIGTERM)
+            time.sleep(0.5)
+    except (OSError, ValueError):
+        pass
+    PIDFILE.write_text(str(os.getpid()))
+    LivePlayer(cfg)
+    Gtk.main()
+    try:
+        if PIDFILE.read_text().strip() == str(os.getpid()):
+            PIDFILE.unlink()
+    except OSError:
+        pass
+
+
+if __name__ == "__main__":
+    main()

@@ -1,5 +1,5 @@
 .\" -*- coding: UTF-8 -*-
-.TH KALI-GLASS 1 "Novembre 2026" "kali-glass 1.1.0" "Commandes utilisateur"
+.TH KALI-GLASS 1 "Novembre 2026" "kali-glass 1.2.0" "Commandes utilisateur"
 .SH NOM
 kali-glass \- bureau verre (glassmorphism) façon macOS pour Kali Linux (XFCE)
 .SH SYNOPSIS
@@ -54,6 +54,26 @@ Affiche l'état actuel au format JSON.
 \fBdoctor\fR
 Diagnostic : session, compositeur, accélération 3D, dock, thèmes, polices.
 Code de sortie 1 si une erreur bloquante est détectée.
+.SS Fonds d'écran animés
+.TP
+\fBlive set\fR \fINOM\fR|\fIFICHIER\fR|\fIURL\fR [\fB\-\-speed\fR \fIX\fR] [\fB\-\-audio\fR]
+Joue une vidéo en boucle comme fond d'écran (MP4, WebM, MKV, MOV, AVI, GIF), sur
+tous les écrans, via \fBmpv\fR(1). Le bureau XFCE (icônes) est mis en veille
+pendant la lecture et revient à l'arrêt. Clic droit sur le fond : menu rapide.
+.TP
+\fBlive download\fR [\fB\-\-quality\fR \fBauto\fR|\fB2160p\fR|\fB1080p\fR] [\fB\-\-only\fR \fIa,b\fR]
+Télécharge le pack officiel (aurora, ocean, sunset, midnight) depuis la dernière
+release GitHub. \fBauto\fR choisit la 4K si un écran dépasse 1200 pixels de haut.
+.TP
+\fBlive list\fR | \fBstop\fR | \fBtoggle\fR
+Liste les vidéos, arrête le fond animé, met en pause ou reprend.
+.TP
+\fBlive add\fR \fIFICHIER\fR
+Copie une vidéo dans la bibliothèque \fI~/.local/share/kali\-glass/live/\fR.
+.TP
+\fBlive options\fR [\fB\-\-audio\fR on|off] [\fB\-\-pause\-fullscreen\fR on|off] [\fB\-\-pause\-battery\fR on|off] [\fB\-\-speed\fR \fIX\fR]
+Son, pause automatique quand une fenêtre est en plein écran ou agrandie, pause
+sur batterie, vitesse de lecture (0.1 à 4).
 .SH OPTIONS
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
@@ -82,6 +102,9 @@ Journal des opérations.
 \fI~/.config/picom/kali\-glass.conf\fR
 Configuration du compositeur.
 .TP
+\fI~/.local/share/kali\-glass/live/\fR
+Bibliothèque de fonds animés.
+.TP
 \fI/usr/share/kali\-glass/\fR
 Fonds d'écran et configurations fournis.
 .SH EXEMPLES
@@ -91,6 +114,8 @@ kali-glass wallpaper ocean
 kali-glass blur 9
 kali-glass doctor
 sudo kali-glass login --wallpaper midnight
+kali-glass live download && kali-glass live set aurora
+kali-glass live set ~/Vidéos/plage-4k.mp4 --speed 0.75
 .fi
 .SH VOIR AUSSI
 \fBglass-center\fR(1), \fBpicom\fR(1), \fBplank\fR(1), \fBxfconf-query\fR(1)

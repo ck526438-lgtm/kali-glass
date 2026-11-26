@@ -8,6 +8,8 @@
   <description>
     <p>Glass Center règle le thème Kali Glass : fonds d'écran en verre dépoli, flou en temps réel,
     barre du haut translucide, dock avec effet loupe, mode clair ou sombre et fond dynamique.</p>
+    <p>Fonds d'écran animés : n'importe quelle vidéo jusqu'en 4K en boucle derrière les fenêtres,
+    avec pause automatique en plein écran et sur batterie.</p>
     <p>Un diagnostic intégré vérifie les dépendances et la carte graphique, et un bouton restaure
     le bureau d'origine.</p>
   </description>
@@ -23,6 +25,7 @@
   <categories><category>Settings</category><category>DesktopSettings</category></categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="1.2.0" date="2026-11-26"/>
     <release version="1.1.0" date="2026-11-25"/>
     <release version="1.0.0" date="2026-11-25"/>
   </releases>

@@ -24,6 +24,15 @@ Depuis le dépôt, sans rien installer :
 ./bin/kali-glass restore
 ```
 
+## Fonds animés
+
+```bash
+python3 tools/generate_live.py --out /tmp/live --size 960x540 --seconds 4 --fps 15 --only aurora   # essai rapide
+./bin/kali-glass live set /tmp/live/kali-glass-live-aurora-540p.mp4
+```
+
+Le rendu 4K complet prend environ 10 minutes par vidéo. La CI le fait en parallèle lors des releases.
+
 ## Règles
 
 - Une modification de réglage passe toujours par `xf_set` / `xf_set_array` : la valeur d'origine est ainsi sauvegardée et `restore` reste exact.

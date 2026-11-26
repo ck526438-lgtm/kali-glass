@@ -1,0 +1,3 @@
+#!/bin/sh
+# Faux mpv pour les tests (la lecture réelle n'est pas testée en CI)
+exit 0

@@ -9,7 +9,7 @@ DESTDIR ?=
 VERSION := $(shell grep -m1 '^VERSION' bin/kali-glass | cut -d'"' -f2)
 DATA    := $(DESTDIR)$(PREFIX)/share/kali-glass
 
-.PHONY: all test lint deb install uninstall wallpapers preview clean version
+.PHONY: all test lint deb install uninstall wallpapers live preview clean version
 
 all: test
 
@@ -32,6 +32,7 @@ install:
 	cp -r wallpapers config $(DATA)/
 	install -Dm755 bin/kali-glass                         $(DESTDIR)$(PREFIX)/bin/kali-glass
 	install -Dm755 apps/glass-center/glass-center         $(DESTDIR)$(PREFIX)/bin/glass-center
+	install -Dm755 bin/kali-glass-live                    $(DESTDIR)$(PREFIX)/bin/kali-glass-live
 	install -Dm644 apps/glass-center/glass-center.desktop $(DESTDIR)$(PREFIX)/share/applications/glass-center.desktop
 	install -Dm644 apps/glass-center/glass-center.svg     $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps/glass-center.svg
 	install -Dm644 apps/glass-center/io.github.ck526438.GlassCenter.metainfo.xml \
@@ -44,7 +45,7 @@ install:
 
 uninstall:
 	rm -rf $(DATA) $(DESTDIR)$(PREFIX)/share/backgrounds/kali-glass
-	rm -f $(DESTDIR)$(PREFIX)/bin/kali-glass $(DESTDIR)$(PREFIX)/bin/glass-center \
+	rm -f $(DESTDIR)$(PREFIX)/bin/kali-glass $(DESTDIR)$(PREFIX)/bin/glass-center $(DESTDIR)$(PREFIX)/bin/kali-glass-live \
 	      $(DESTDIR)$(PREFIX)/share/applications/glass-center.desktop \
 	      $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps/glass-center.svg \
 	      $(DESTDIR)$(PREFIX)/share/metainfo/io.github.ck526438.GlassCenter.metainfo.xml \
@@ -54,6 +55,9 @@ uninstall:
 wallpapers:
 	python3 tools/generate_wallpapers.py wallpapers 3840 2160
 	for f in wallpapers/*.png; do [ -e "$$f" ] && convert "$$f" -quality 93 "$${f%.png}.jpg" && rm "$$f"; done; true
+
+live:
+	python3 tools/generate_live.py --out dist/live --size 3840x2160
 
 preview:
 	python3 tools/make_preview.py

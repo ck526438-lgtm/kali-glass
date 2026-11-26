@@ -21,14 +21,17 @@ Section: x11
 Priority: optional
 Architecture: all
 Installed-Size: $SIZE
-Depends: python3 (>= 3.9), python3-gi, gir1.2-gtk-3.0, xfconf, picom (>= 10), git, x11-xserver-utils
-Recommends: plank | xfce4-docklike-plugin, fonts-inter, sassc, libglib2.0-dev-bin, libxml2-utils, mesa-utils, bash-completion
+Depends: python3 (>= 3.9), python3-gi, gir1.2-gtk-3.0, xfconf, picom (>= 10), git, x11-xserver-utils, x11-utils, mpv
+Recommends: ffmpeg, plank | xfce4-docklike-plugin, fonts-inter, sassc, libglib2.0-dev-bin, libxml2-utils, mesa-utils, bash-completion
 Maintainer: ck526438-lgtm <ck526438-lgtm@users.noreply.github.com>
 Homepage: https://github.com/ck526438-lgtm/kali-glass
 Description: Bureau verre (glassmorphism) façon macOS pour Kali Linux
  Fonds d'écran en verre dépoli, flou en temps réel (picom dual_kawase),
  thème WhiteSur, barre du haut translucide, dock Plank avec effet loupe
  et l'application de réglages Glass Center.
+ .
+ Fonds d'écran animés : n'importe quelle vidéo (jusqu'en 4K) jouée en boucle
+ derrière les fenêtres, avec pause automatique en plein écran et sur batterie.
 EOF
 
 cat > "$PKG/DEBIAN/postinst" <<'EOF'

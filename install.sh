@@ -50,7 +50,7 @@ fi
 c "Installation des dépendances (sudo)…"
 sudo apt-get update -qq
 sudo apt-get install -y make picom git sassc libglib2.0-dev-bin libxml2-utils \
-  python3-gi gir1.2-gtk-3.0 xfconf x11-xserver-utils
+  python3-gi gir1.2-gtk-3.0 xfconf x11-xserver-utils x11-utils mpv ffmpeg
 # plank a quitté Debian testing en 2026 : s'il manque, Kali Glass crée un dock avec un panneau XFCE
 sudo apt-get install -y plank 2>/dev/null || sudo apt-get install -y xfce4-docklike-plugin 2>/dev/null || \
   echo "  (plank indisponible : dock XFCE de secours)"
@@ -64,6 +64,8 @@ okk "Fichiers installés"
 
 if [[ -z "$NO_APPLY" ]]; then
   kali-glass apply $LIGHT
+  read -rp "Télécharger le pack de fonds d'écran ANIMÉS (vidéos, ~150 Mo en 4K) ? [o/N] " r
+  if [[ "$r" =~ ^[oOyY]$ ]]; then kali-glass live download && kali-glass live set aurora; fi
   read -rp "Mettre aussi le fond Glass sur l'écran de connexion ? [o/N] " r
   if [[ "$r" =~ ^[oOyY]$ ]]; then sudo kali-glass login --wallpaper aurora; fi
 fi
@@ -72,5 +74,6 @@ echo
 okk "Kali Glass est installé !"
 echo "   • Réglages graphiques : menu → « Glass Center »  (ou commande : glass-center)"
 echo "   • Ligne de commande   : kali-glass --help"
+echo "   • Fond animé          : kali-glass live set ~/Vidéos/ma-video.mp4"
 echo "   • Tout annuler        : ./uninstall.sh"
 echo

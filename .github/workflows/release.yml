@@ -12,7 +12,7 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   test:
@@ -39,6 +39,9 @@ jobs:
     name: Paquet .deb
     needs: test
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      release: ${{ steps.decide.outputs.release }}
     steps:
       - uses: actions/checkout@v4
 
@@ -48,58 +51,102 @@ jobs:
       - name: Vérifier le paquet
         run: |
           dpkg-deb -I dist/*.deb
-          dpkg-deb -c dist/*.deb | grep -q usr/bin/kali-glass
-          dpkg-deb -c dist/*.deb | grep -q usr/share/man/man1/kali-glass.1.gz
+          for f in usr/bin/kali-glass usr/bin/kali-glass-live usr/bin/glass-center usr/share/man/man1/kali-glass.1.gz; do
+            dpkg-deb -c dist/*.deb | grep -q "$f" || { echo "manquant : $f"; exit 1; }
+          done
 
-      - name: Pack des fonds d'écran
-        run: |
-          cd wallpapers && zip -9 ../dist/kali-glass-wallpapers.zip *.jpg
-          cd ../dist && sha256sum ./*.deb ./*.zip > SHA256SUMS
+      - name: Pack des fonds fixes
+        run: cd wallpapers && zip -9 ../dist/kali-glass-wallpapers.zip *.jpg
 
       - uses: actions/upload-artifact@v4
         with:
-          name: kali-glass
+          name: package
           path: dist/*
 
       - name: Lire la version
         id: ver
         run: echo "version=$(grep -m1 '^VERSION' bin/kali-glass | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
 
-      - name: Extraire les notes du CHANGELOG
-        run: |
-          awk -v v="${{ steps.ver.outputs.version }}" '
-            $0 ~ "^## \\[" v "\\]" {on=1; next}
-            on && /^## \[/ {exit}
-            on {print}' CHANGELOG.md > notes.md
-          cat >> notes.md <<'EOF'
-
-          ### Installation
-          ```bash
-          wget https://github.com/${{ github.repository }}/releases/download/v${{ steps.ver.outputs.version }}/kali-glass_${{ steps.ver.outputs.version }}_all.deb
-          sudo apt install ./kali-glass_${{ steps.ver.outputs.version }}_all.deb
-          kali-glass apply
-          ```
-          Vérifier l'intégrité : `sha256sum -c SHA256SUMS --ignore-missing`
-          EOF
-
-      - name: La release existe-t-elle ?
-        id: exists
+      - name: Faut-il publier ?
+        id: decide
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "v${{ steps.ver.outputs.version }}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "found=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "found=false" >> "$GITHUB_OUTPUT"
+          rel=false
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then rel=true
+          elif [[ "$GITHUB_REF" == refs/heads/main ]] && \
+               ! gh release view "v${{ steps.ver.outputs.version }}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then rel=true
           fi
+          echo "release=$rel" >> "$GITHUB_OUTPUT"
+          echo "Publication : $rel"
 
-      # Publie automatiquement quand VERSION change dans bin/kali-glass (push sur main), ou sur un tag v*.
-      - name: Publier la release
-        if: startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && steps.exists.outputs.found == 'false')
-        uses: softprops/action-gh-release@v2
+  # Rendu des fonds animés 4K, une vidéo par machine (en parallèle), seulement pour une release
+  render:
+    name: Fond animé ${{ matrix.name }}
+    needs: build
+    if: needs.build.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: true
+      matrix:
+        name: [aurora, ocean, sunset, midnight]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          tag_name: v${{ steps.ver.outputs.version }}
-          name: Kali Glass ${{ steps.ver.outputs.version }}
+          python-version: "3.12"
+      - name: Dépendances
+        run: |
+          pip install numpy pillow
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      - name: Rendu 4K (20 s, 30 i/s, boucle parfaite)
+        run: python3 tools/generate_live.py --out live --size 3840x2160 --fps 30 --seconds 20 --crf 22 --only ${{ matrix.name }}
+      - name: Version 1080p
+        run: |
+          ffmpeg -loglevel error -y -i live/kali-glass-live-${{ matrix.name }}-2160p.mp4 \
+            -vf scale=1920:1080:flags=lanczos -c:v libx264 -preset veryfast -crf 20 -pix_fmt yuv420p \
+            -movflags +faststart live/kali-glass-live-${{ matrix.name }}-1080p.mp4
+          ls -la live
+      - uses: actions/upload-artifact@v4
+        with:
+          name: live-${{ matrix.name }}
+          path: live/*.mp4
+
+  release:
+    name: Publier la release
+    needs: [build, render]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Sommes de contrôle
+        run: cd dist && sha256sum ./*.deb ./*.zip ./*.mp4 > SHA256SUMS && cat SHA256SUMS
+      - name: Notes depuis le CHANGELOG
+        run: |
+          v="${{ needs.build.outputs.version }}"
+          awk -v v="$v" '
+            $0 ~ "^## \\[" v "\\]" {on=1; next}
+            on && /^## \[/ {exit}
+            on {print}' CHANGELOG.md > notes.md
+          cat >> notes.md <<EOF
+
+          ### Installation
+          \`\`\`bash
+          wget https://github.com/${GITHUB_REPOSITORY}/releases/download/v${v}/kali-glass_${v}_all.deb
+          sudo apt install ./kali-glass_${v}_all.deb
+          kali-glass apply
+          kali-glass live download && kali-glass live set aurora   # fond animé
+          \`\`\`
+          Vérifier l'intégrité : \`sha256sum -c SHA256SUMS --ignore-missing\`
+          EOF
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.build.outputs.version }}
+          name: Kali Glass ${{ needs.build.outputs.version }}
           target_commitish: ${{ github.sha }}
           body_path: notes.md
           files: dist/*

@@ -148,3 +148,85 @@ def test_picom_config_strength_and_disable(tmp_path, monkeypatch):
     m.setup_picom(st, 0)
     assert 'method = "none"' in (tmp_path / "picom.conf").read_text()
     assert (tmp_path / "autostart" / "kali-glass-picom.desktop").exists()
+
+
+# ───────────────────────── fonds animés ─────────────────────────
+
+def make_video(env, name="ma-video.mp4"):
+    lib = env.home / ".local/share/kali-glass/live"
+    lib.mkdir(parents=True, exist_ok=True)
+    v = lib / name
+    v.write_bytes(b"\x00\x00\x00\x18ftypmp42fake")
+    return v
+
+
+def test_live_list_shows_library_and_missing_pack(env):
+    make_video(env, "kali-glass-live-aurora-2160p.mp4")
+    make_video(env, "plage.webm")
+    out = env.run("live", "list").stdout
+    assert "aurora" in out and "plage" in out
+    assert "ocean" in out and "live download" in out   # le reste du pack est signalé
+
+
+def test_live_set_writes_state_and_autostart(env):
+    v = make_video(env, "kali-glass-live-ocean-1080p.mp4")
+    env.run("live", "set", "ocean")
+    lv = env.state()["settings"]["live"]
+    assert lv["video"] == str(v) and lv["active"] is True
+    assert lv["pause_fullscreen"] is True and lv["pause_battery"] is True
+    assert (env.home / ".config/autostart/kali-glass-live.desktop").exists()
+    # le fond fixe assorti est appliqué
+    assert env.xf()["xfce4-desktop:/backdrop/screen0/monitorVirtual1/workspace0/last-image"].endswith("kali-glass-ocean.jpg")
+
+
+def test_live_set_with_custom_file_and_options(env, tmp_path):
+    v = tmp_path / "anime.mkv"
+    v.write_bytes(b"fake")
+    env.run("live", "set", str(v), "--speed", "0.5", "--audio")
+    lv = env.state()["settings"]["live"]
+    assert lv["video"] == str(v) and lv["speed"] == 0.5 and lv["audio"] is True
+    env.run("live", "options", "--pause-battery", "off", "--audio", "off")
+    lv = env.state()["settings"]["live"]
+    assert lv["pause_battery"] is False and lv["audio"] is False
+
+
+def test_static_wallpaper_stops_live(env):
+    make_video(env)
+    env.run("live", "set", "ma-video")
+    env.run("wallpaper", "sunset")
+    assert env.state()["settings"]["live"]["active"] is False
+    assert not (env.home / ".config/autostart/kali-glass-live.desktop").exists()
+
+
+def test_restore_stops_live(env):
+    make_video(env)
+    env.run("apply", "--no-themes")
+    env.run("live", "set", "ma-video")
+    env.run("restore")
+    assert not (env.home / ".config/autostart/kali-glass-live.desktop").exists()
+
+
+def test_live_add_copies_into_library(env, tmp_path):
+    v = tmp_path / "Mon Fond.webm"
+    v.write_bytes(b"fake")
+    env.run("live", "add", str(v))
+    assert (env.home / ".local/share/kali-glass/live/Mon Fond.webm").exists()
+
+
+@pytest.mark.parametrize("args", [
+    ("live", "set", "ocean"),                        # pack pas encore téléchargé
+    ("live", "set", "/etc/hostname"),                # pas une vidéo
+    ("live", "options", "--speed", "9"),
+    ("live", "download", "--only", "inexistant"),
+    ("live", "toggle"),                              # rien en cours
+])
+def test_live_invalid_input_is_rejected(env, args):
+    assert env.run(*args, check=False).returncode != 0
+
+
+def test_live_name_strips_prefix_and_resolution():
+    m = load_module()
+    assert m.live_name("kali-glass-live-aurora-2160p.mp4") == "aurora"
+    assert m.live_name("kali-glass-live-ocean-1080p.mp4") == "ocean"
+    assert m.live_name("plage-720p.webm") == "plage"
+    assert m.live_name("ma video.mp4") == "ma video"

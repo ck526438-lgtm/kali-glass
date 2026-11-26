@@ -33,9 +33,37 @@ Fonds d'écran en verre dépoli · flou en temps réel · barre de menus translu
 | ▭ **Barre du haut** | Fine (28 px), translucide, opacité réglable |
 | ⚓ **Dock** | Plank avec thème verre « KaliGlass », zoom 150 %, masquage intelligent. Si plank n'est pas dispo (retiré de Debian testing en 2026), un dock XFCE translucide est créé à la place |
 | 🌗 **Mode clair / sombre** | Un clic pour basculer |
+| 🎬 **Fonds animés 4K** | N'importe quelle vidéo en boucle derrière tes fenêtres + pack officiel de 4 fonds « verre » animés. Pause auto en plein écran et sur batterie |
 | 🕒 **Fond dynamique** | Le fond change selon l'heure de la journée |
 | 🔐 **Écran de connexion** | Fond Glass aussi sur LightDM (optionnel) |
 | ↩ **Retour arrière** | `kali-glass restore` remet exactement tes anciens réglages |
+
+## 🎬 Fonds d'écran animés
+
+<div align="center">
+<img src="docs/live-preview.webp" width="640" alt="Fond animé Aurora">
+<br><sub>« Aurora » du pack officiel : les halos dérivent derrière le verre et un reflet le traverse (boucle de 20 s, en 4K).</sub>
+</div>
+
+```bash
+kali-glass live download                  # pack officiel (4K ou 1080p selon ton écran)
+kali-glass live set aurora                # aurora · ocean · sunset · midnight
+kali-glass live set ~/Vidéos/plage.mp4    # ta propre vidéo : MP4, WebM, MKV, MOV, GIF
+kali-glass live set https://exemple.com/fond.mp4
+kali-glass live options --speed 0.75 --pause-battery off
+kali-glass live toggle                    # pause / reprise
+kali-glass live stop                      # retour au fond fixe
+```
+
+- La vidéo couvre tous les écrans, recadrée sans déformation.
+- **Pause automatique** quand une fenêtre est en plein écran ou agrandie (le fond est caché), et sur batterie.
+- **Clic droit** sur le fond : Glass Center, terminal, pause, arrêt.
+- Pendant la lecture, les icônes du bureau XFCE sont masquées. Elles reviennent dès que tu arrêtes.
+- Décodage matériel utilisé si ta carte le permet. En machine virtuelle, préfère la 1080p (`--quality 1080p`).
+
+Tout se règle aussi depuis **Glass Center → Fonds animés** :
+
+<img src="docs/glass-center-live.png" width="640" alt="Glass Center : fonds animés">
 
 ## 🚀 Installation
 
@@ -71,6 +99,7 @@ Menu → **Glass Center**, ou la commande `glass-center`.
 <img src="docs/glass-center-doctor.png" width="640" alt="Glass Center : diagnostic">
 
 - **Fonds d'écran** : galerie, ta propre image, fond dynamique
+- **Fonds animés** : vidéos avec miniatures, ajout de ta vidéo, pack 4K, son, vitesse, pauses automatiques
 - **Apparence** : mode clair/sombre, intensité du flou, redémarrage du compositeur
 - **Dock & barre** : activer le dock, opacité de la barre du haut
 - **Diagnostic** : vérifie dépendances, carte graphique et thèmes, avec la solution à chaque problème
@@ -112,6 +141,8 @@ Le journal détaillé est dans `~/.cache/kali-glass/kali-glass.log`.
 | Écran qui scintille | `kali-glass blur 0` puis relance, ou mets `vsync = false;` dans `~/.config/picom/kali-glass.conf` |
 | Le thème WhiteSur n'est pas appliqué | `kali-glass install-themes` puis `kali-glass apply` |
 | Le dock n'apparaît pas | `kali-glass dock on`. Pour avoir les icônes des applis ouvertes dans le dock XFCE : `sudo apt install xfce4-docklike-plugin` puis `kali-glass dock off && kali-glass dock on` |
+| Le fond animé saccade ou chauffe | `kali-glass live download --quality 1080p --force` puis `kali-glass live set aurora`. Vérifie l'accélération 3D avec `kali-glass doctor` |
+| Le fond animé ne s'affiche pas | `kali-glass live stop` puis `kali-glass live set …`. Regarde les lignes `LIVE` du journal |
 | Je veux revenir à Kali d'origine | `kali-glass restore` ou `./uninstall.sh` |
 
 ## 📁 Structure
@@ -120,6 +151,7 @@ Le journal détaillé est dans `~/.cache/kali-glass/kali-glass.log`.
 kali-glass/
 ├── apps/glass-center/      appli GTK « Glass Center » (+ icône, .desktop, AppStream)
 ├── bin/kali-glass          outil en ligne de commande (Python)
+├── bin/kali-glass-live     lecteur de fonds animés (mpv incrusté)
 ├── man/ · completions/     pages man et autocomplétion bash
 ├── tests/                  tests pytest (xfconf simulé)
 ├── config/
@@ -127,7 +159,7 @@ kali-glass/
 │   ├── plank/KaliGlass/    thème du dock en verre
 │   └── gtk-3.0/            retouches GTK (menus, barre)
 ├── wallpapers/             6 fonds d'écran 4K
-├── tools/                  générateurs des fonds et de l'aperçu
+├── tools/                  générateurs des fonds fixes, des fonds animés et de l'aperçu
 ├── packaging/build-deb.sh  construit le paquet .deb
 ├── Makefile · install.sh · uninstall.sh
 └── .github/workflows/      CI : vérifie, construit le .deb, publie la release
@@ -137,6 +169,7 @@ Régénérer les fonds (autre résolution, par ex. 2560×1440) :
 
 ```bash
 python3 tools/generate_wallpapers.py wallpapers 2560 1440
+python3 tools/generate_live.py --size 2560x1440 --seconds 20 --only aurora   # fond animé
 ```
 
 ## 👩‍💻 Développement

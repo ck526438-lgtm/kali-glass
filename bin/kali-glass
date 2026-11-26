@@ -15,6 +15,9 @@ Commandes :
   kali-glass restore                             remet les réglages d'origine
   kali-glass status                              affiche l'état actuel
   kali-glass doctor                              diagnostic (dépendances, GPU, thèmes)
+  kali-glass live set NOM|FICHIER|URL            fond d'écran ANIMÉ (vidéo 4K en boucle)
+  kali-glass live download                       télécharge le pack de fonds animés
+  kali-glass live list | stop | toggle | add | options
 """
 import argparse
 import datetime
@@ -22,13 +25,14 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 HOME = Path.home()
 CONF_DIR = HOME / ".config" / "kali-glass"
 STATE_FILE = CONF_DIR / "state.json"
@@ -575,6 +579,9 @@ def cmd_apply(a):
 
 def cmd_wallpaper(a):
     st = load_state()
+    if st["settings"].get("live", {}).get("active"):
+        live_stop(st, quiet=True)
+        info("Fond animé arrêté (remplacé par un fond fixe)")
     set_wallpaper(st, a.name)
     if a.name != "dynamic":
         st["settings"]["dynamic"] = False
@@ -678,6 +685,7 @@ def cmd_login(a):
 
 def cmd_restore(a):
     st = load_state()
+    live_stop(st, quiet=True)
     for key, val in st.get("backup", {}).items():
         channel, prop = key.split(":", 1)
         if val is None:
@@ -694,7 +702,7 @@ def cmd_restore(a):
             r = run(["xfconf-query", "-c", channel, "-p", prop, "-s", val])
             if r.returncode != 0:
                 run(["xfconf-query", "-c", channel, "-p", prop, "--create", "-t", t, "-s", val])
-    for n in ("picom", "plank", "dynamic"):
+    for n in ("picom", "plank", "dynamic", "live"):
         remove_autostart(n)
     run(["pkill", "-x", "picom"]); run(["pkill", "-x", "plank"])
     run(["pkill", "-f", "kali-glass dynamic-daemon"])
@@ -710,8 +718,260 @@ def cmd_status(a):
     print(json.dumps({"version": VERSION, **st,
                       "picom": bool(run(["pgrep", "-x", "picom"]).stdout.strip()),
                       "plank": bool(run(["pgrep", "-x", "plank"]).stdout.strip()),
+                      "live_running": bool(live_running()),
                       "gtk": find_theme(st.get("mode", "dark")), "data": str(data_dir())},
                      indent=2, ensure_ascii=False))
+
+
+# ───────────────────────── fonds d'écran animés (vidéo) ─────────────────────────
+
+REPO = "ck526438-lgtm/kali-glass"
+LIVE_PACK = ["aurora", "ocean", "sunset", "midnight"]
+LIVE_DIR = HOME / ".local" / "share" / "kali-glass" / "live"
+THUMB_DIR = HOME / ".cache" / "kali-glass" / "thumbs"
+VIDEO_EXT = {".mp4", ".webm", ".mkv", ".mov", ".m4v", ".avi", ".gif"}
+LIVE_PIDFILE = HOME / ".cache" / "kali-glass" / "live.pid"
+
+
+def live_exe():
+    for c in (shutil.which("kali-glass-live"), Path(__file__).resolve().parent / "kali-glass-live"):
+        if c and Path(c).exists():
+            return str(c)
+    die("kali-glass-live introuvable. Réinstalle le paquet.")
+
+
+def live_name(f):
+    n = re.sub(r"^kali-glass-live-", "", Path(f).stem)
+    return re.sub(r"-\d{3,4}p$", "", n)
+
+
+def live_library():
+    """Vidéos disponibles : pack système éventuel + bibliothèque perso (~/.local/share/kali-glass/live)."""
+    vids = {}
+    dirs = [Path("/usr/share/kali-glass/live"), LIVE_DIR]
+    for d in dirs:
+        if d.is_dir():
+            for f in sorted(d.iterdir()):
+                if f.suffix.lower() in VIDEO_EXT:
+                    vids[live_name(f)] = f
+    return vids
+
+
+def screen_height():
+    r = run(["xrandr", "--current"])
+    m = re.findall(r"\s(\d+)x(\d+)\+\d+\+\d+", r.stdout or "")
+    return max((int(h) for _w, h in m), default=1080)
+
+
+def download(url, dest):
+    import urllib.request
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    req = urllib.request.Request(url, headers={"User-Agent": f"kali-glass/{VERSION}"})
+    with urllib.request.urlopen(req, timeout=60) as r, tmp.open("wb") as f:
+        total = int(r.headers.get("Content-Length") or 0)
+        done = 0
+        while chunk := r.read(1 << 20):
+            f.write(chunk)
+            done += len(chunk)
+            if total and sys.stdout.isatty():
+                pct = done * 100 // total
+                print(f"\r    {dest.name}  {pct:3d} %  {done / 1e6:6.1f}/{total / 1e6:.1f} Mo", end="", flush=True)
+    if sys.stdout.isatty():
+        print()
+    tmp.replace(dest)
+    return dest
+
+
+def live_running():
+    try:
+        pid = int(LIVE_PIDFILE.read_text())
+        return pid if "kali-glass-live" in Path(f"/proc/{pid}/cmdline").read_text() else None
+    except (OSError, ValueError):
+        return None
+
+
+def xfdesktop_stop(st):
+    """Le bureau XFCE (icônes) se dessine au-dessus de la vidéo : on le met en veille."""
+    if run(["pgrep", "-x", "xfdesktop"]).stdout.strip():
+        run(["xfdesktop", "--quit"])
+        st["settings"].setdefault("live", {})["xfdesktop_stopped"] = True
+
+
+def xfdesktop_start(st):
+    if st["settings"].get("live", {}).pop("xfdesktop_stopped", False) and os.environ.get("DISPLAY") \
+            and not run(["pgrep", "-x", "xfdesktop"]).stdout.strip() and have("xfdesktop"):
+        subprocess.Popen(["xfdesktop"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def live_start(st):
+    exe = live_exe()
+    write_autostart("live", exe, "Fond d'écran animé")
+    pid = live_running()
+    if pid:
+        os.kill(pid, signal.SIGTERM)
+        time.sleep(0.6)
+    if os.environ.get("DISPLAY"):
+        xfdesktop_stop(st)
+        save_state(st)
+        subprocess.Popen([exe], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def live_stop(st, quiet=False):
+    remove_autostart("live")
+    pid = live_running()
+    if pid:
+        os.kill(pid, signal.SIGTERM)
+    xfdesktop_start(st)
+    if "live" in st["settings"]:
+        st["settings"]["live"]["active"] = False
+    if not quiet:
+        ok("Fond animé arrêté")
+
+
+def resolve_video(name):
+    if re.match(r"^https?://", name):
+        fname = re.sub(r"[^\w.\-]", "_", name.rsplit("/", 1)[-1].split("?")[0]) or "video.mp4"
+        if Path(fname).suffix.lower() not in VIDEO_EXT:
+            fname += ".mp4"
+        info(f"Téléchargement de {name}…")
+        try:
+            return download(name, LIVE_DIR / fname)
+        except Exception as e:  # noqa: BLE001
+            die(f"Téléchargement impossible : {e}")
+    p = Path(os.path.expanduser(name))
+    if p.is_file():
+        if p.suffix.lower() not in VIDEO_EXT:
+            die(f"Format non pris en charge : {p.suffix}. Formats : {', '.join(sorted(VIDEO_EXT))}")
+        return p.resolve()
+    lib = live_library()
+    if name in lib:
+        return lib[name]
+    if name in LIVE_PACK:
+        die(f"« {name} » n'est pas encore téléchargé. Lance : kali-glass live download")
+    die(f"Vidéo « {name} » introuvable. Disponibles : {', '.join(lib) or 'aucune'}")
+
+
+def cmd_live_set(a):
+    if not have("mpv"):
+        die("mpv est requis : sudo apt install mpv")
+    if a.speed is not None and not 0.1 <= a.speed <= 4:
+        die("La vitesse doit être entre 0.1 et 4")
+    st = load_state()
+    video = resolve_video(a.video)
+    lv = st["settings"].setdefault("live", {})
+    lv.update(video=str(video), active=True)
+    if a.audio:
+        lv["audio"] = True
+    if a.speed is not None:
+        lv["speed"] = a.speed
+    lv.setdefault("pause_fullscreen", True)
+    lv.setdefault("pause_battery", True)
+    if live_name(video) in LIVE_PACK:  # fond fixe assorti (visible au démarrage de la session)
+        set_wallpaper(st, live_name(video))
+    live_start(st)
+    save_state(st)
+    ok(f"Fond animé : {video.name}")
+    if not os.environ.get("DISPLAY"):
+        warn("Pas de session graphique : il démarrera à la prochaine connexion")
+
+
+def cmd_live_stop(a):
+    st = load_state()
+    live_stop(st)
+    save_state(st)
+
+
+def cmd_live_toggle(a):
+    pid = live_running()
+    if not pid:
+        die("Aucun fond animé en cours")
+    os.kill(pid, signal.SIGUSR1)
+    ok("Pause / reprise")
+
+
+def cmd_live_list(a):
+    lv = load_state()["settings"].get("live", {})
+    cur = lv.get("video") if lv.get("active") else None
+    lib = live_library()
+    for n, f in lib.items():
+        print(("● " if str(f) == cur else "  ") + f"{n:<16} {f.stat().st_size / 1e6:7.1f} Mo   {f}")
+    missing = [n for n in LIVE_PACK if n not in lib]
+    if missing:
+        print(f"\n  Pack non téléchargé : {', '.join(missing)}  →  kali-glass live download")
+
+
+def cmd_live_download(a):
+    q = a.quality
+    if q == "auto":
+        q = "2160p" if screen_height() > 1200 else "1080p"
+    names = [n.strip() for n in a.only.split(",")] if a.only else LIVE_PACK
+    for n in names:
+        if n not in LIVE_PACK:
+            die(f"« {n} » ne fait pas partie du pack : {', '.join(LIVE_PACK)}")
+    info(f"Pack de fonds animés en {q} ({len(names)} vidéos)")
+    for n in names:
+        fname = f"kali-glass-live-{n}-{q}.mp4"
+        dest = LIVE_DIR / fname
+        if dest.exists() and not a.force:
+            ok(f"{fname} déjà présent")
+            continue
+        url = f"https://github.com/{REPO}/releases/latest/download/{fname}"
+        try:
+            download(url, dest)
+        except Exception as e:  # noqa: BLE001
+            die(f"Téléchargement impossible ({e}). Télécharge-le depuis https://github.com/{REPO}/releases/latest")
+        ok(f"{fname} ({dest.stat().st_size / 1e6:.0f} Mo)")
+    ok(f"Pack installé dans {LIVE_DIR}. Exemple : kali-glass live set aurora")
+
+
+def cmd_live_add(a):
+    src = Path(os.path.expanduser(a.file))
+    if not src.is_file() or src.suffix.lower() not in VIDEO_EXT:
+        die("Donne un fichier vidéo existant (" + ", ".join(sorted(VIDEO_EXT)) + ")")
+    LIVE_DIR.mkdir(parents=True, exist_ok=True)
+    dest = LIVE_DIR / src.name
+    if src.resolve() != dest.resolve():
+        shutil.copy2(src, dest)
+    ok(f"Ajouté à la bibliothèque : {live_name(dest)}")
+
+
+def cmd_live_options(a):
+    st = load_state()
+    lv = st["settings"].setdefault("live", {})
+    changed = []
+    for k in ("audio", "pause_fullscreen", "pause_battery"):
+        v = getattr(a, k)
+        if v is not None:
+            lv[k] = v == "on"
+            changed.append(f"{k}={v}")
+    if a.speed is not None:
+        if not 0.1 <= a.speed <= 4:
+            die("La vitesse doit être entre 0.1 et 4")
+        lv["speed"] = a.speed
+        changed.append(f"speed={a.speed}")
+    save_state(st)
+    if changed and lv.get("active") and live_running():
+        live_start(st)
+        save_state(st)
+    cur = {k: lv.get(k) for k in ("audio", "speed", "pause_fullscreen", "pause_battery")}
+    ok("Options : " + (", ".join(changed) or json.dumps(cur, ensure_ascii=False)))
+
+
+def cmd_live_thumb(a):
+    """Miniature d'une vidéo (utilisée par Glass Center)."""
+    video = resolve_video(a.video)
+    THUMB_DIR.mkdir(parents=True, exist_ok=True)
+    out = THUMB_DIR / f"{live_name(video)}.jpg"
+    if not out.exists() or out.stat().st_mtime < video.stat().st_mtime:
+        for ss in (["-ss", "2"], []):
+            r = run(["ffmpeg", "-y", "-loglevel", "error", *ss, "-i", str(video), "-frames:v", "1",
+                     "-vf", "scale=480:-2", str(out)])
+            if r.returncode == 0 and out.exists():
+                break
+    if not out.exists():
+        die("Miniature impossible (ffmpeg absent ?)")
+    print(out)
 
 
 def _picom_version():
@@ -750,6 +1010,9 @@ def cmd_doctor(a):
               "Rendu logiciel : active l'accélération 3D de ta VM, sinon le flou sera lent", "warn")
     else:
         check("Accélération 3D (flou)", False, "glxinfo absent", "sudo apt install mesa-utils pour vérifier", "warn")
+    check("mpv (fonds animés)", have("mpv"), "", "sudo apt install mpv", "warn")
+    check("ffmpeg (miniatures)", have("ffmpeg"), "", "sudo apt install ffmpeg", "warn")
+    check("xprop (pause auto)", have("xprop"), "", "sudo apt install x11-utils", "warn")
     dock = "plank" if have("plank") else ("panneau XFCE" if have("xfconf-query") else "aucun")
     check("Dock", dock != "aucun", dock, "sudo apt install plank (ou xfce4-docklike-plugin)", "warn")
     check("Thème GTK WhiteSur", bool(find_theme("dark")), find_theme("dark") or "absent", "kali-glass install-themes")
@@ -801,6 +1064,34 @@ def main():
     sp.add_parser("restore").set_defaults(f=cmd_restore)
     sp.add_parser("status").set_defaults(f=cmd_status)
     sp.add_parser("doctor", help="diagnostic de l'installation").set_defaults(f=cmd_doctor)
+
+    lp = sp.add_parser("live", help="fonds d'écran animés (vidéo)")
+    lsp = lp.add_subparsers(dest="live_cmd", required=True)
+    s = lsp.add_parser("set", help="joue une vidéo en fond (nom, fichier ou URL)")
+    s.add_argument("video")
+    s.add_argument("--audio", action="store_true")
+    s.add_argument("--speed", type=float)
+    s.set_defaults(f=cmd_live_set)
+    lsp.add_parser("stop", help="arrête le fond animé").set_defaults(f=cmd_live_stop)
+    lsp.add_parser("toggle", help="pause / reprise").set_defaults(f=cmd_live_toggle)
+    lsp.add_parser("list", help="vidéos disponibles").set_defaults(f=cmd_live_list)
+    s = lsp.add_parser("download", help="télécharge le pack de fonds animés")
+    s.add_argument("--quality", choices=["auto", "2160p", "1080p"], default="auto")
+    s.add_argument("--only", help="ex. aurora,ocean")
+    s.add_argument("--force", action="store_true")
+    s.set_defaults(f=cmd_live_download)
+    s = lsp.add_parser("add", help="copie une vidéo dans la bibliothèque")
+    s.add_argument("file")
+    s.set_defaults(f=cmd_live_add)
+    s = lsp.add_parser("options", help="son, vitesse, pauses automatiques")
+    s.add_argument("--audio", choices=["on", "off"])
+    s.add_argument("--pause-fullscreen", dest="pause_fullscreen", choices=["on", "off"])
+    s.add_argument("--pause-battery", dest="pause_battery", choices=["on", "off"])
+    s.add_argument("--speed", type=float)
+    s.set_defaults(f=cmd_live_options)
+    s = lsp.add_parser("thumb", help="miniature d'une vidéo")
+    s.add_argument("video")
+    s.set_defaults(f=cmd_live_thumb)
     a = p.parse_args()
     global VERBOSE
     VERBOSE = a.verbose
